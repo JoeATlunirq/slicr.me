@@ -5,9 +5,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { Scissors, Download, Settings, ArrowLeft, Upload } from "lucide-react";
+import { Scissors, Download, Settings, ArrowLeft, Upload, Clock, Layers } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "@/hooks/use-toast";
+import Timeline from "@/components/Timeline";
+import SectionsPanel from "@/components/SectionsPanel";
 
 interface AppInterfaceProps {
   onBack: () => void;
@@ -24,6 +26,10 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
   const [dragActive, setDragActive] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasFile, setHasFile] = useState(false);
+  const [timelineData, setTimelineData] = useState<{segments: {start: number, end: number, type: string}[]}>({
+    segments: []
+  });
+  const [sectionSplitDuration, setSectionSplitDuration] = useState([5]);
 
   const handleDrag = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -63,6 +69,26 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
     setTimeout(() => {
       setIsProcessing(false);
       setHasFile(true);
+      
+      // Generate some mock timeline data
+      const mockSegments = [];
+      let currentTime = 0;
+      
+      for (let i = 0; i < 20; i++) {
+        const segmentLength = Math.random() * 10 + 2;
+        const segmentType = Math.random() > 0.3 ? "audio" : "silence";
+        
+        mockSegments.push({
+          start: currentTime,
+          end: currentTime + segmentLength,
+          type: segmentType
+        });
+        
+        currentTime += segmentLength;
+      }
+      
+      setTimelineData({ segments: mockSegments });
+      
       toast({
         title: "Processing complete!",
         description: "Your file is ready for editing.",
@@ -100,22 +126,41 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
     }, 1500);
   };
 
+  const handleCreateSections = () => {
+    toast({
+      title: "Creating Sections",
+      description: `Splitting timeline into sections based on ${sectionSplitDuration[0]}s silence threshold...`,
+    });
+    
+    // In a real app, this would update the timeline with section markers
+    setTimeout(() => {
+      toast({
+        title: "Sections Created!",
+        description: "Your timeline has been divided into sections.",
+      });
+    }, 1500);
+  };
+
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="min-h-screen bg-gradient-to-br from-purple-50 to-indigo-50 flex flex-col">
       {/* App Header */}
-      <header className="bg-white border-b border-gray-200 py-4">
+      <header className="bg-white border-b border-violet-200 py-4 shadow-sm">
         <div className="container mx-auto px-4 flex items-center justify-between">
           <div className="flex items-center space-x-4">
             <Button variant="ghost" onClick={onBack} className="p-2">
               <ArrowLeft className="h-5 w-5" />
             </Button>
-            <h1 className="text-xl font-bold">SilenceCut</h1>
+            <h1 className="text-xl font-bold text-violet-800">SilenceCut</h1>
           </div>
           <div className="flex items-center space-x-2">
             <Button variant="outline" disabled={!hasFile}>
               Save Project
             </Button>
-            <Button disabled={!hasFile} onClick={handleExport}>
+            <Button 
+              className="bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700" 
+              disabled={!hasFile} 
+              onClick={handleExport}
+            >
               Export
             </Button>
           </div>
@@ -130,7 +175,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
           {!hasFile ? (
             <div 
               className={`bg-white rounded-lg border-2 ${
-                dragActive ? "border-primary border-dashed" : "border-gray-200"
+                dragActive ? "border-violet-500 border-dashed" : "border-gray-200"
               } flex-1 flex flex-col items-center justify-center p-12`}
               onDragEnter={handleDrag}
               onDragLeave={handleDrag}
@@ -139,19 +184,19 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
             >
               {isProcessing ? (
                 <div className="flex flex-col items-center justify-center">
-                  <div className="w-16 h-16 border-4 border-primary border-t-transparent rounded-full animate-spin mb-4"></div>
+                  <div className="w-16 h-16 border-4 border-violet-500 border-t-transparent rounded-full animate-spin mb-4"></div>
                   <p className="text-xl font-medium text-gray-700">Processing your file...</p>
                 </div>
               ) : (
                 <>
-                  <div className="w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mb-6">
-                    <Upload className="h-10 w-10 text-gray-400" />
+                  <div className="w-24 h-24 bg-violet-100 rounded-full flex items-center justify-center mb-6">
+                    <Upload className="h-10 w-10 text-violet-500" />
                   </div>
                   <h2 className="text-3xl font-bold text-gray-800 mb-2">Drop a File to Edit</h2>
-                  <p className="text-gray-600 mb-8">audio or video</p>
+                  <p className="text-violet-600 mb-8">audio or video</p>
 
-                  <div className="w-24 h-24 rounded-full border-2 border-dashed border-gray-300 flex items-center justify-center mb-6">
-                    <ArrowLeft className="h-8 w-8 text-gray-400 transform rotate-90" />
+                  <div className="w-24 h-24 rounded-full border-2 border-dashed border-violet-300 flex items-center justify-center mb-6">
+                    <ArrowLeft className="h-8 w-8 text-violet-400 transform rotate-90" />
                   </div>
 
                   <p className="text-gray-600">Or click to Browse.</p>
@@ -164,7 +209,10 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                     onChange={handleFileChange}
                   />
                   <label htmlFor="file-upload">
-                    <Button variant="outline" className="mt-4">
+                    <Button 
+                      variant="outline" 
+                      className="mt-4 border-violet-300 text-violet-700 hover:bg-violet-50"
+                    >
                       Browse Files
                     </Button>
                   </label>
@@ -172,16 +220,16 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
               )}
             </div>
           ) : (
-            <div className="bg-white rounded-lg border border-gray-200 flex-1 flex flex-col">
+            <div className="bg-white rounded-lg border border-violet-200 flex-1 flex flex-col shadow-md">
               <div className="bg-gray-800 h-80 flex items-center justify-center rounded-t-lg">
                 <p className="text-white">Video Preview</p>
               </div>
-              <div className="p-4 border-t border-gray-200">
-                <div className="bg-gray-100 h-24 rounded-md flex items-center justify-center">
-                  <p className="text-gray-500">Waveform Visualization</p>
-                </div>
+              <div className="p-4 border-t border-gray-300">
+                {/* Timeline Component */}
+                <Timeline timelineData={timelineData} />
+                
                 <div className="flex justify-between mt-4">
-                  <Button variant="outline" size="sm">
+                  <Button variant="outline" size="sm" className="bg-white">
                     <Play className="h-4 w-4 mr-2" />
                     Play
                   </Button>
@@ -198,10 +246,10 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0">
                 <Tabs defaultValue="audio-video" className="w-full">
-                  <TabsList className="w-full grid grid-cols-3">
-                    <TabsTrigger value="audio-video">Audio/Video</TabsTrigger>
-                    <TabsTrigger value="timeline">Timeline</TabsTrigger>
-                    <TabsTrigger value="sections">Sections</TabsTrigger>
+                  <TabsList className="w-full grid grid-cols-3 bg-violet-100">
+                    <TabsTrigger value="audio-video" className="data-[state=active]:bg-white">Audio/Video</TabsTrigger>
+                    <TabsTrigger value="timeline" className="data-[state=active]:bg-white">Timeline</TabsTrigger>
+                    <TabsTrigger value="sections" className="data-[state=active]:bg-white">Sections</TabsTrigger>
                   </TabsList>
                   <div className="p-4">
                     <div className="flex flex-col gap-4">
@@ -221,8 +269,11 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                           </SelectContent>
                         </Select>
                       </div>
-                      <p className="text-sm text-gray-600">32-bit PCM WAV</p>
-                      <Button onClick={handleExport}>
+                      <p className="text-sm text-violet-600">32-bit PCM WAV</p>
+                      <Button 
+                        onClick={handleExport} 
+                        className="bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700"
+                      >
                         <Download className="h-4 w-4 mr-2" />
                         Export...
                       </Button>
@@ -236,16 +287,19 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
 
         {/* Right: Settings Panel */}
         <div className="md:w-1/3">
-          <Card className="shadow-sm">
+          <Card className="shadow-sm border-violet-200">
             <CardContent className="p-0">
               <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-                <TabsList className="w-full grid grid-cols-3">
-                  <TabsTrigger value="silence" className="relative">
+                <TabsList className="w-full grid grid-cols-3 bg-violet-100">
+                  <TabsTrigger value="silence" className="relative data-[state=active]:bg-white">
                     <Scissors className="h-5 w-5 mr-2" />
                     Silence
                   </TabsTrigger>
-                  <TabsTrigger value="sections">Sections</TabsTrigger>
-                  <TabsTrigger value="export">
+                  <TabsTrigger value="sections" className="data-[state=active]:bg-white">
+                    <Layers className="h-5 w-5 mr-2" />
+                    Sections
+                  </TabsTrigger>
+                  <TabsTrigger value="export" className="data-[state=active]:bg-white">
                     <Download className="h-5 w-5 mr-2" />
                     Export
                   </TabsTrigger>
@@ -254,7 +308,11 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                 <TabsContent value="silence" className="p-4">
                   <div className="space-y-6">
                     <div className="flex justify-between items-center">
-                      <Button onClick={handleRemoveSilence} disabled={!hasFile}>
+                      <Button 
+                        onClick={handleRemoveSilence} 
+                        disabled={!hasFile}
+                        className="bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700"
+                      >
                         Remove Silence
                       </Button>
                       <Button variant="ghost" size="icon" disabled={!hasFile}>
@@ -262,8 +320,8 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                       </Button>
                     </div>
 
-                    <div className="border-t border-gray-200 pt-4">
-                      <p className="text-sm text-gray-500 mb-4">
+                    <div className="border-t border-violet-100 pt-4">
+                      <p className="text-sm text-violet-600 mb-4">
                         ← to Simple Mode
                       </p>
 
@@ -282,6 +340,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                               max={0.1}
                               step={0.001}
                               disabled={!hasFile}
+                              className="[&>*:nth-child(2)]:bg-violet-500"
                             />
                             <span className="ml-2 text-sm font-mono w-12">{threshold[0].toFixed(3)}</span>
                           </div>
@@ -300,6 +359,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                             max={2}
                             step={0.01}
                             disabled={!hasFile}
+                            className="[&>*:nth-child(2)]:bg-violet-500"
                           />
                         </div>
 
@@ -320,6 +380,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                                 max={0.2}
                                 step={0.0001}
                                 disabled={!hasFile}
+                                className="[&>*:nth-child(2)]:bg-violet-500"
                               />
                             </div>
                             
@@ -334,6 +395,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                                 max={0.2}
                                 step={0.0001}
                                 disabled={!hasFile}
+                                className="[&>*:nth-child(2)]:bg-violet-500"
                               />
                             </div>
                           </div>
@@ -342,7 +404,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                             <Button 
                               variant="outline" 
                               size="sm"
-                              className="text-xs"
+                              className="text-xs border-violet-300 text-violet-700"
                               disabled={!hasFile}
                             >
                               <span className="lock-icon">🔒</span>
@@ -364,6 +426,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                             max={1}
                             step={0.01}
                             disabled={!hasFile}
+                            className="[&>*:nth-child(2)]:bg-violet-500"
                           />
                         </div>
                       </div>
@@ -372,9 +435,12 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                 </TabsContent>
 
                 <TabsContent value="sections">
-                  <div className="p-4">
-                    <p className="text-gray-500">Section management tools will appear here.</p>
-                  </div>
+                  <SectionsPanel 
+                    sectionSplitDuration={sectionSplitDuration} 
+                    onSectionSplitDurationChange={setSectionSplitDuration} 
+                    onCreateSections={handleCreateSections} 
+                    disabled={!hasFile} 
+                  />
                 </TabsContent>
 
                 <TabsContent value="export">
@@ -408,7 +474,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                       </div>
                       
                       <Button 
-                        className="w-full" 
+                        className="w-full bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700" 
                         onClick={handleExport}
                         disabled={!hasFile}
                       >
