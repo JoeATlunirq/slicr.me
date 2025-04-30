@@ -14,6 +14,13 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 // --- AWS S3 Configuration --- 
 const { AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET_NAME } = process.env;
 
+// --- Add careful logging --- 
+console.log(`[API Init Debug] AWS_REGION: ${AWS_REGION}`);
+console.log(`[API Init Debug] S3_BUCKET_NAME: ${S3_BUCKET_NAME}`);
+console.log(`[API Init Debug] AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID?.substring(0, 5)}...`); // Log first few chars only
+console.log(`[API Init Debug] AWS_SECRET_ACCESS_KEY length: ${AWS_SECRET_ACCESS_KEY?.length}`); // Log length only
+// --- End careful logging ---
+
 if (!AWS_ACCESS_KEY_ID || !AWS_SECRET_ACCESS_KEY || !AWS_REGION || !S3_BUCKET_NAME) {
     console.error("[API Init] Missing required AWS environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET_NAME).");
     // Optionally throw an error or handle differently if needed for local dev without env vars
