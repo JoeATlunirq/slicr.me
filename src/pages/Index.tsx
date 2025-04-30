@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Hero from "@/components/Hero";
 import Features from "@/components/Features";
 import HowItWorks from "@/components/HowItWorks";
@@ -10,10 +10,31 @@ import AppInterface from "@/components/AppInterface";
 import { ArrowDown } from "lucide-react";
 
 const Index = () => {
-  const [showApp, setShowApp] = useState(false);
-  
+  const [showApp, setShowApp] = useState(() => {
+    const savedState = sessionStorage.getItem('slicrShowApp');
+    return savedState === 'true';
+  });
+
+  const handleGetStarted = () => {
+    setShowApp(true);
+    sessionStorage.setItem('slicrShowApp', 'true');
+  };
+
+  const handleBack = () => {
+    setShowApp(false);
+    sessionStorage.removeItem('slicrShowApp');
+  };
+
+  useEffect(() => {
+    if (showApp) {
+      sessionStorage.setItem('slicrShowApp', 'true');
+    } else {
+      sessionStorage.removeItem('slicrShowApp');
+    }
+  }, [showApp]);
+
   if (showApp) {
-    return <AppInterface onBack={() => setShowApp(false)} />;
+    return <AppInterface onBack={handleBack} />;
   }
   
   return (
@@ -24,24 +45,24 @@ const Index = () => {
           <h1 className="text-2xl font-bold">Slicr<span className="text-primary">.me</span></h1>
         </div>
         <div className="flex items-center gap-4">
-          <Button variant="outline" onClick={() => setShowApp(true)}>
+          <Button variant="outline" onClick={handleGetStarted}>
             Try It Now
           </Button>
-          <Button onClick={() => setShowApp(true)}>
+          <Button onClick={handleGetStarted}>
             Get Started
           </Button>
         </div>
       </header>
 
       {/* Hero Section */}
-      <Hero onGetStarted={() => setShowApp(true)} />
+      <Hero onGetStarted={handleGetStarted} />
       
       {/* Main Content */}
       <div className="container mx-auto px-4 py-16">
         <Features />
         <HowItWorks />
         <Testimonials />
-        <Pricing onGetStarted={() => setShowApp(true)} />
+        <Pricing onGetStarted={handleGetStarted} />
         <FAQ />
       </div>
 
