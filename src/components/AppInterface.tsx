@@ -69,6 +69,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
   const [isExportProcessing, setIsExportProcessing] = useState(false);
   const [hasFile, setHasFile] = useState(false);
   const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
+  const [originalFile, setOriginalFile] = useState<File | null>(null);
   const [regions, setRegions] = useState<{ start: number; end: number }[]>(initialSavedState?.regions ?? []);
   const timelineRef = useRef<TimelineHandle>(null);
   const [exportAsSections, setExportAsSections] = useState<boolean>(initialSavedState?.exportAsSections ?? false);
@@ -217,6 +218,9 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
 
   if (file.type.startsWith("audio/")) {
     try {
+      // Store the original File object
+      setOriginalFile(file); 
+
       // --- Initialize Audio Context on file load (requires user interaction) ---
       const audioCtx = await initializeAudio();
       if (!audioCtx) {
@@ -473,54 +477,97 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
 
     setIsExportProcessing(true);
     const exportType = exportAsSections ? "Segments" : "Full Processed Audio";
-    toast({ title: `Exporting ${exportType}...`, description: "Processing audio, this may take a moment." });
+    toast({ title: `Exporting ${exportType}...`, description: "Sending to server for processing..." });
 
-    // Ensure Audio Context is ready before proceeding
-    const audioCtx = await initializeAudio();
-    if (!audioCtx) {
+    // --- Prepare data for API --- 
+    if (!originalFile) {
+        toast({ title: "Error", description: "Original file not found.", variant: "destructive" });
+        setIsExportProcessing(false);
+        return;
+    }
+
+    const params = {
+        thresholdDb: thresholdDb[0],
+        minDuration: minDuration[0],
+        leftPadding: leftPadding[0],
+        rightPadding: rightPadding[0],
+        appliedPlaybackRate: appliedPlaybackRate, // Can be null
+        exportAsSections: exportAsSections
+    };
+
+    const formData = new FormData();
+    formData.append('audioFile', originalFile);
+    formData.append('params', JSON.stringify(params));
+
+    console.log("[API Export] Sending parameters:", params);
+    // ---------------------------
+
+    // Ensure Audio Context is ready before proceeding (might not be needed if only sending file)
+    const audioCtx = await initializeAudio(); 
+    if (!audioCtx) { 
         toast({ title: "Error", description: "Audio engine not ready. Please try again.", variant: "destructive" });
         setIsExportProcessing(false);
         return;
     }
 
-    // --- Define Native Speed Change Function (with pitch shift) ---
-    const performNativeSpeedChange = async (inputBuffer: AudioBuffer, rate: number): Promise<AudioBuffer> => {
-        return new Promise(async (resolve, reject) => {
-            try {
-                console.log(`[Native Speed Change] Starting offline processing. Rate: ${rate}`);
-                const targetLength = Math.ceil(inputBuffer.length / rate);
-                const offlineCtx = new OfflineAudioContext(
-                    inputBuffer.numberOfChannels,
-                    targetLength,
-                    inputBuffer.sampleRate
-                );
-
-                // Source node to play the original (combined) buffer
-                const sourceNode = offlineCtx.createBufferSource();
-                sourceNode.buffer = inputBuffer;
-
-                // --- Apply native playbackRate --- 
-                sourceNode.playbackRate.value = rate;
-                console.log(`[Native Speed Change] Setting sourceNode.playbackRate.value = ${rate}`);
-                // ---------------------------------
-
-                // Connect graph: source -> destination
-                sourceNode.connect(offlineCtx.destination);
-
-                // Start processing
-                sourceNode.start(0);
-                const processedBuffer = await offlineCtx.startRendering();
-                console.log("[Native Speed Change] Offline rendering complete.");
-                resolve(processedBuffer);
-            } catch (error) {
-                console.error("[Native Speed Change] Error during offline processing:", error);
-                reject(error);
-            }
-        });
-    };
-    // ---------------------------------------
-
     try {
+      // --- Call API --- 
+      const response = await fetch('/api/process', {
+          method: 'POST',
+          body: formData, 
+          // Headers are automatically set by browser for FormData
+      });
+
+      setIsExportProcessing(false); // Stop loading indicator
+
+      if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: "Unknown server error" }));
+          throw new Error(`Server error: ${response.status} - ${errorData?.error || response.statusText}`);
+      }
+
+      const result = await response.json();
+
+      if (!result.success || !result.files || result.files.length === 0) {
+          throw new Error(result.error || "API did not return valid file data.");
+      }
+
+      console.log("[API Export] Received success response:", result);
+
+      // --- Handle downloaded files --- 
+      // Decode base64 data, create Blob, trigger download
+      if (result.files && result.files.length > 0) {
+        // TODO: Handle multiple files if exportAsSections is implemented in API
+        const fileInfo = result.files[0];
+        try {
+            const byteCharacters = atob(fileInfo.data);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], { type: 'audio/wav' }); // Assuming WAV for now
+
+            // Create a link and trigger download
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = fileInfo.filename || 'processed_audio.wav';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href); // Clean up object URL
+
+            toast({ title: "Download Started", description: `Downloading ${link.download}...` });
+
+        } catch (decodeError) {
+            console.error("Error decoding or downloading file:", decodeError);
+            toast({ title: "Download Error", description: "Failed to decode or prepare the downloaded file.", variant: "destructive"});
+        }
+      } else {
+         toast({ title: "Processing Complete", description: "Server processed the request but returned no files.", variant: "default"});
+      }
+
+      // --- Remove old local processing logic --- 
+      /*
       // Get ALL deleted regions (auto + manual) directly from the Timeline component
       const regionsToCut = timelineRef.current?.getDeletedRegions() ?? [];
       regionsToCut.sort((a, b) => a.start - b.start); // Ensure sorted
@@ -582,19 +629,22 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
           }
 
           // --- Log duration before download --- 
-          console.log(`[Export Full] Final combined buffer duration BEFORE download: ${combinedBuffer.duration.toFixed(3)}s. Expected (approx): ${audioBuffer.duration.toFixed(3)}s (minus cuts) / ${appliedPlaybackRate?.toFixed(2) ?? 1.0}`);
-          // -------------------------------------
+           console.log(`[Export Full] Final combined buffer duration BEFORE download: ${combinedBuffer.duration.toFixed(3)}s. Expected (approx): ${audioBuffer.duration.toFixed(3)}s (minus cuts) / ${appliedPlaybackRate?.toFixed(2) ?? 1.0}`);
+           // -------------------------------------
 
-          // Convert final buffer (potentially stretched) to WAV and download
-          downloadCombinedAudio(combinedBuffer, "processed_audio.wav");
-          toast({ title: "Export Complete!", description: "Processed audio exported as single WAV file." });
+           // Convert final buffer (potentially stretched) to WAV and download
+           downloadCombinedAudio(combinedBuffer, "processed_audio.wav");
+           toast({ title: "Export Complete!", description: "Processed audio exported as single WAV file." });
       }
 
+      */
+      
     } catch (error) {
         console.error("Error during export process:", error);
         toast({ title: "Export Error", description: `Failed to export: ${error instanceof Error ? error.message : 'Unknown error'}`, variant: "destructive" });
+        setIsExportProcessing(false); // Ensure loading stops on error
     } finally {
-        setIsExportProcessing(false);
+        // Removed redundant setIsExportProcessing(false);
     }
   };
 
