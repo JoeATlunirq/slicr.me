@@ -99,6 +99,9 @@ export default async function handler(req, res) {
   let downloadedTempPath = null;
   let cleanupNeeded = false;
   let params; // Declare params in the outer scope
+  let intermediateOutputPath = null; // Declare intermediate path here
+  let finalOutputPath = null; // Declare final path here
+  let pathToUpload = null; // Declare upload path here
 
   try {
     // --- Get Input: File Upload OR URL --- 
@@ -200,12 +203,10 @@ export default async function handler(req, res) {
                               || 'audio.wav'; 
     const safeOriginalFilename = originalFilename.replace(/[^a-z0-9_.-]/gi, '_');
     const baseOutputFilename = `processed_${path.parse(safeOriginalFilename).name}_${Date.now()}`;
-    // Path for the output of the first pass (silence removal)
-    const intermediateOutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_intermediate.wav`);
-    // Path for the final output (potentially after second pass)
-    const finalOutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_final.wav`);
-    const s3Key = `${baseOutputFilename}_final.wav`; // S3 key uses the final filename structure
-    let pathToUpload = null; // Will hold the path to the file we actually upload
+    // Assign to outer scope variables
+    intermediateOutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_intermediate.wav`);
+    finalOutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_final.wav`);
+    const s3Key = `${baseOutputFilename}_final.wav`;
     // -----------------------------
 
     console.log(`[API] Input Path for Processing: ${finalInputPath}`);
@@ -219,6 +220,8 @@ export default async function handler(req, res) {
     const leftPadding = parseFloat(params.leftPadding ?? 0.0332);
     const rightPadding = parseFloat(params.rightPadding ?? 0.0332);
     const targetDurationParam = params.targetDuration ? parseFloat(params.targetDuration) : null;
+    const responseFormat = params.responseFormat || 'link'; // Default to link
+    console.log(`[API] Response format requested: ${responseFormat}`);
     // ------------------------
 
     // --- FFmpeg Pass 1: Silence Removal --- 
@@ -343,42 +346,59 @@ export default async function handler(req, res) {
     }
     // --- End FFmpeg Pass 2 ---
 
-    // --- Check Final File for Upload --- 
+    // --- Check Final File for Upload/Processing --- 
     if (!pathToUpload || !fs.existsSync(pathToUpload) || fs.statSync(pathToUpload).size === 0) {
-      console.error(`[API] File to upload (${pathToUpload || 'path unknown'}) missing or empty before S3 upload.`);
-      throw new Error('Processing failed to produce a valid file for upload.');
+      console.error(`[API] File to process (${pathToUpload || 'path unknown'}) missing or empty.`);
+      throw new Error('Processing failed to produce a valid file.');
     }
     // --- End Check ---
-    
-    // --- Upload to S3 --- 
-    console.log(`[API] Uploading ${pathToUpload} to S3 bucket ${S3_BUCKET_NAME} as ${s3Key}...`);
-    const fileStream = fs.createReadStream(pathToUpload);
-    const uploadParams = {
-        Bucket: S3_BUCKET_NAME,
-        Key: s3Key,
-        Body: fileStream,
-        ContentType: 'audio/wav' // Set appropriate content type
-    };
-    try {
-        await s3Client.send(new PutObjectCommand(uploadParams));
-        console.log(`[API] Successfully uploaded to S3.`);
-    } catch (s3Error) {
-        console.error("[API] Error uploading to S3:", s3Error);
-        throw new Error("Failed to upload processed file to storage.");
-    }
-    // --- End Upload to S3 ---
 
-    // --- Send Response (S3 URL) --- 
-    // Construct URL using the S3 Key, which matches the final filename structure
-    const fileUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${s3Key}`;
-    console.log(`[API] Sending success response with S3 URL: ${fileUrl}`);
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({
-      success: true,
-      fileUrl: fileUrl,
-    }));
-    // --- End Send Response ---
+    // --- Conditional Response: Link vs Base64 ---
+    if (responseFormat === 'base64') {
+        // --- Send Response (Base64) --- 
+        console.log(`[API] Reading file ${pathToUpload} for Base64 response...`);
+        const processedData = fs.readFileSync(pathToUpload);
+        const base64Data = processedData.toString('base64');
+        const responseFilename = path.basename(pathToUpload); // Get the actual final filename
+
+        console.log(`[API] Sending success response with Base64 data, filename: ${responseFilename}`);
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+            success: true,
+            files: [{ filename: responseFilename, data: base64Data }], // Use original files structure for UI
+        }));
+        // --- End Send Base64 Response ---
+    } else {
+        // --- Upload to S3 --- 
+        console.log(`[API] Uploading ${pathToUpload} to S3 bucket ${S3_BUCKET_NAME} as ${s3Key}...`);
+        const fileStream = fs.createReadStream(pathToUpload);
+        const uploadParams = {
+            Bucket: S3_BUCKET_NAME,
+            Key: s3Key,
+            Body: fileStream,
+            ContentType: 'audio/wav' 
+        };
+        try {
+            await s3Client.send(new PutObjectCommand(uploadParams));
+            console.log(`[API] Successfully uploaded to S3.`);
+        } catch (s3Error) {
+            console.error("[API] Error uploading to S3:", s3Error);
+            throw new Error("Failed to upload processed file to storage.");
+        }
+        // --- End Upload to S3 ---
+
+        // --- Send Response (S3 URL) --- 
+        const fileUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${s3Key}`;
+        console.log(`[API] Sending success response with S3 URL: ${fileUrl}`);
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+            success: true,
+            fileUrl: fileUrl,
+        }));
+        // --- End Send URL Response ---
+    }
 
   } catch (processError) {
     // --- Main Processing Error Handling --- 
@@ -390,12 +410,17 @@ export default async function handler(req, res) {
   } finally {
       // --- Cleanup --- 
       // Clean up intermediate file
-      if (fs.existsSync(intermediateOutputPath)) {
+      if (intermediateOutputPath && fs.existsSync(intermediateOutputPath)) { // Added check if path exists
           try { fs.unlinkSync(intermediateOutputPath); } catch(e){ console.error("Error deleting intermediate temp file:", e); }
       }
-      // Clean up final output file (if second pass ran)
-      if (pathToUpload === finalOutputPath && fs.existsSync(finalOutputPath)) {
+      // Clean up final output file (if second pass ran and it wasn't the intermediate)
+      if (finalOutputPath && pathToUpload === finalOutputPath && fs.existsSync(finalOutputPath)) {
            try { fs.unlinkSync(finalOutputPath); } catch(e){ console.error("Error deleting final output temp file:", e); }
+      }
+      // Clean up the file we processed IF it wasn't the intermediate file (which is already handled)
+      // This covers the case where Pass 2 happened OR if Base64 response was sent using the final path
+      if (pathToUpload && pathToUpload !== intermediateOutputPath && fs.existsSync(pathToUpload)){
+           try { fs.unlinkSync(pathToUpload); } catch(e){ console.error("Error deleting processed temp file:", e); }
       }
       // Clean up input file ONLY if we downloaded it
       if (downloadedTempPath && fs.existsSync(downloadedTempPath)) {
