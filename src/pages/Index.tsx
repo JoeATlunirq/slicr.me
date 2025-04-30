@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import Hero from "@/components/Hero";
 import Features from "@/components/Features";
 import HowItWorks from "@/components/HowItWorks";
@@ -45,6 +46,11 @@ const Index = () => {
           <h1 className="text-2xl font-bold">Slicr<span className="text-primary">.me</span></h1>
         </div>
         <div className="flex items-center gap-4">
+          <Link to="/api-docs">
+            <Button variant="link" className="text-muted-foreground hover:text-primary">
+              API Docs
+            </Button>
+          </Link>
           <Button variant="outline" onClick={handleGetStarted}>
             Try It Now
           </Button>
