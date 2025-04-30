@@ -96,17 +96,53 @@ export default async function handler(req, res) {
   console.log(`[API] Output File Path: ${outputPath}`);
   console.log(`[API] FFmpeg Path: ${ffmpegInstaller.path}`);
 
+  // --- Get Original Duration & Calculate Rate --- 
+  let originalDuration = null;
+  let actualPlaybackRate = 1.0; // Default to 1.0
+  try {
+      const metadata = await new Promise((resolve, reject) => {
+          ffmpeg.ffprobe(inputPath, (err, metadata) => {
+              if (err) reject(err);
+              else resolve(metadata);
+          });
+      });
+      originalDuration = metadata?.format?.duration;
+      console.log(`[API] Original Duration: ${originalDuration}s`);
+
+      const targetDurationParam = params.targetDuration ? parseFloat(params.targetDuration) : null;
+      
+      if (originalDuration && targetDurationParam && targetDurationParam > 0 && Math.abs(originalDuration - targetDurationParam) > 0.01) { // Check if target is valid and different
+          actualPlaybackRate = originalDuration / targetDurationParam;
+          // Clamp rate to ffmpeg's atempo filter limits (0.5 to 100.0)
+          actualPlaybackRate = Math.max(0.5, Math.min(100.0, actualPlaybackRate));
+          console.log(`[API] Target duration ${targetDurationParam}s requested. Calculated rate: ${actualPlaybackRate.toFixed(4)}`);
+      } else {
+         console.log(`[API] No valid target duration specified or it matches original duration. Using rate: 1.0`);
+         actualPlaybackRate = 1.0;
+      }
+  } catch (probeError) {
+      console.error('[API] Error probing audio file duration:', probeError);
+      // Decide if we should fail or just continue without speed change
+      // Let's continue without speed change for robustness
+      actualPlaybackRate = 1.0;
+      console.warn('[API] Could not determine original duration. Skipping speed adjustment.');
+  }
+  // --- End Duration & Rate Calc ---
+
+  // --- Input Validation (Basic) ---
   const thresholdDb = parseFloat(params.thresholdDb ?? -40);
   const minDuration = parseFloat(params.minDuration ?? 0.2);
   const leftPadding = parseFloat(params.leftPadding ?? 0.0332);
   const rightPadding = parseFloat(params.rightPadding ?? 0.0332);
-  const appliedPlaybackRate = params.appliedPlaybackRate ? parseFloat(params.appliedPlaybackRate) : null;
+  // removed appliedPlaybackRate validation, calculated above
+  // ---------------------------------
 
   try {
     await new Promise((resolve, reject) => {
       let command = ffmpeg(inputPath);
       let complexFilter = [];
 
+      // --- Silence Removal Filter --- 
       const effectiveMinDuration = Math.max(0.01, minDuration - leftPadding - rightPadding);
       if (effectiveMinDuration < minDuration) {
         console.log(`[API] Applying silenceremove: stop_duration=${effectiveMinDuration.toFixed(4)}, stop_threshold=${thresholdDb}dB`);
@@ -115,32 +151,23 @@ export default async function handler(req, res) {
         console.log(`[API] Skipping silenceremove as effectiveMinDuration (${effectiveMinDuration.toFixed(4)}) >= minDuration (${minDuration.toFixed(4)}) due to padding.`);
       }
 
-      if (appliedPlaybackRate && appliedPlaybackRate !== 1) {
-          let rate = appliedPlaybackRate;
+      // --- Speed/Tempo Filter (using calculated rate) --- 
+      if (actualPlaybackRate && Math.abs(actualPlaybackRate - 1.0) > 0.001) { // Check if rate needs applying
+          let rate = actualPlaybackRate;
           let tempoFilter = '';
-          console.log(`[API] Applying atempo for rate: ${rate}`);
-          if (rate > 0 && rate < 0.5) {
-              while (rate < 0.5) {
-                  tempoFilter += 'atempo=0.5,';
-                  rate /= 0.5;
-              }
-              if (rate > 0.5) tempoFilter += `atempo=${rate.toFixed(4)},`;
-          } else if (rate > 100.0) {
-               while (rate > 100.0) {
-                  tempoFilter += 'atempo=100.0,';
-                  rate /= 100.0;
-              }
-              tempoFilter += `atempo=${rate.toFixed(4)},`;
-          } else if (rate >= 0.5 && rate <= 100.0) {
-              tempoFilter = `atempo=${rate.toFixed(4)},`;
+          console.log(`[API] Applying atempo for calculated rate: ${rate}`);
+          // atempo filter range is 0.5 to 100.0. Apply multiple times if needed.
+          if (rate >= 0.5 && rate <= 100.0) {
+              tempoFilter = `atempo=${rate.toFixed(4)}`;
           } else {
-              console.warn(`[API] Unsupported playback rate for atempo: ${appliedPlaybackRate}. Skipping tempo adjustment.`);
-          }
-          if (tempoFilter.endsWith(',')) {
-             tempoFilter = tempoFilter.slice(0, -1);
+              // This case shouldn't happen due to clamping above, but log just in case.
+              console.warn(`[API] Calculated playback rate ${rate} is outside atempo range (0.5-100.0). Skipping tempo adjustment.`);
           }
           if(tempoFilter) complexFilter.push(tempoFilter);
+      } else {
+          console.log("[API] Playback rate is 1.0. Skipping tempo filter.");
       }
+      // --------------------------
       
       if (complexFilter.length > 0) {
           console.log('[API] Applying Complex Filter:', complexFilter.join(','));

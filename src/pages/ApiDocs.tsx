@@ -10,7 +10,7 @@ const ApiDocs: React.FC = () => {
   const curlExample = `curl -X POST \\
   https://www.slicr.me/api/process \\
   -F 'audioFile=@/path/to/your/audio.wav' \\
-  -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "appliedPlaybackRate": 1.5}'`;
+  -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "targetDuration": 60.0}'`;
 
   const jsExample = `const audioFile = /* get your File object */;
 const params = {
@@ -18,7 +18,7 @@ const params = {
     minDuration: 0.2,       // Minimum duration of silence in seconds
     leftPadding: 0.05,      // Padding before cut in seconds
     rightPadding: 0.05,     // Padding after cut in seconds
-    appliedPlaybackRate: 1.5, // Optional: Target speed (0.5 to 100.0), null/1 for no change
+    targetDuration: 60.0,   // Optional: Target duration in seconds. null/omitted for original speed.
     // exportAsSections: false // Currently not implemented server-side
 };
 
@@ -157,10 +157,10 @@ fetch('https://www.slicr.me/api/process', {
                    <td className="border border-border p-2"><code className="font-mono">0.05</code></td>
                  </tr>
                  <tr>
-                   <td className="border border-border p-2"><code className="font-mono">appliedPlaybackRate</code></td>
+                   <td className="border border-border p-2"><code className="font-mono">targetDuration</code></td>
                    <td className="border border-border p-2">Number | null</td>
-                   <td className="border border-border p-2">Target playback speed multiplier. Uses FFmpeg's <code className="font-mono">atempo</code> filter (preserves pitch). Range: 0.5 to 100.0. Use <code className="font-mono">1</code> or <code className="font-mono">null</code> for original speed.</td>
-                   <td className="border border-border p-2"><code className="font-mono">1.5</code> or <code className="font-mono">null</code></td>
+                   <td className="border border-border p-2">Target final duration in seconds. The backend calculates the necessary speed multiplier (0.5x-100x) to reach this duration based on the original audio length. Use <code className="font-mono">null</code> or omit for original speed/duration.</td>
+                   <td className="border border-border p-2"><code className="font-mono">60.0</code> or <code className="font-mono">null</code></td>
                  </tr>
                   {/* <tr>
                     <td className="border border-border p-2"><code className="font-mono">exportAsSections</code></td>

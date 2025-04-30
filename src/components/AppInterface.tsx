@@ -496,7 +496,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
         minDuration: minDuration[0],
         leftPadding: leftPadding[0],
         rightPadding: rightPadding[0],
-        appliedPlaybackRate: appliedPlaybackRate, // Can be null
+        targetDuration: targetDuration,
         exportAsSections: exportAsSections
     };
 
