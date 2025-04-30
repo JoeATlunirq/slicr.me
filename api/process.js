@@ -191,124 +191,168 @@ export default async function handler(req, res) {
 
   // Use a final variable for input path inside the next try block
   const finalInputPath = inputPath;
-  let finalOutputPath = null;
 
   try { // Wrap the main processing and cleanup
 
-    // --- Determine Output Path --- 
+    // --- Determine Output Paths --- 
     const originalFilename = files?.audioFile?.[0]?.originalFilename 
                               || (fields?.audioUrl?.[0] ? path.basename(new URL(fields.audioUrl[0]).pathname) : null) 
                               || 'audio.wav'; 
     const safeOriginalFilename = originalFilename.replace(/[^a-z0-9_.-]/gi, '_');
-    const outputFilename = `processed_${path.parse(safeOriginalFilename).name}_${Date.now()}.wav`;
-    finalOutputPath = path.join(os.tmpdir(), outputFilename);
-    // Define S3 Key (using the same filename for consistency)
-    const s3Key = outputFilename; 
+    const baseOutputFilename = `processed_${path.parse(safeOriginalFilename).name}_${Date.now()}`;
+    // Path for the output of the first pass (silence removal)
+    const intermediateOutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_intermediate.wav`);
+    // Path for the final output (potentially after second pass)
+    const finalOutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_final.wav`);
+    const s3Key = `${baseOutputFilename}_final.wav`; // S3 key uses the final filename structure
+    let pathToUpload = null; // Will hold the path to the file we actually upload
     // -----------------------------
 
     console.log(`[API] Input Path for Processing: ${finalInputPath}`);
-    console.log(`[API] Output Path: ${finalOutputPath}`);
+    console.log(`[API] Intermediate Output Path: ${intermediateOutputPath}`);
+    console.log(`[API] Final Output Path: ${finalOutputPath}`);
     console.log(`[API] FFmpeg Path: ${ffmpegInstaller.path}`);
-
-    // --- Get Original Duration & Calculate Rate --- 
-    let originalDuration = null;
-    let actualPlaybackRate = 1.0;
-    try {
-        const metadata = await new Promise((resolve, reject) => {
-            ffmpeg.ffprobe(finalInputPath, (err, metadata) => {
-                if (err) reject(err);
-                else resolve(metadata);
-            });
-        });
-        originalDuration = metadata?.format?.duration;
-        console.log(`[API] Original Duration: ${originalDuration}s`);
-
-        const targetDurationParam = params.targetDuration ? parseFloat(params.targetDuration) : null;
-        
-        if (originalDuration && targetDurationParam && targetDurationParam > 0 && Math.abs(originalDuration - targetDurationParam) > 0.01) {
-            actualPlaybackRate = originalDuration / targetDurationParam;
-            actualPlaybackRate = Math.max(0.5, Math.min(100.0, actualPlaybackRate)); 
-            console.log(`[API] Target duration ${targetDurationParam}s requested. Calculated rate: ${actualPlaybackRate.toFixed(4)}`);
-        } else {
-            console.log(`[API] No valid target duration specified or it matches original duration. Using rate: 1.0`);
-            actualPlaybackRate = 1.0;
-        }
-    } catch (probeError) {
-        console.error('[API] Error probing audio file duration:', probeError);
-        actualPlaybackRate = 1.0;
-        console.warn('[API] Could not determine original duration. Skipping speed adjustment.');
-    }
-    // --- End Duration & Rate Calc ---
 
     // --- Input Validation --- 
     const thresholdDb = parseFloat(params.thresholdDb ?? -40);
     const minDuration = parseFloat(params.minDuration ?? 0.2);
     const leftPadding = parseFloat(params.leftPadding ?? 0.0332);
     const rightPadding = parseFloat(params.rightPadding ?? 0.0332);
+    const targetDurationParam = params.targetDuration ? parseFloat(params.targetDuration) : null;
     // ------------------------
 
-    // --- FFmpeg Processing --- 
+    // --- FFmpeg Pass 1: Silence Removal --- 
+    console.log("[API] Starting Pass 1: Silence Removal...");
     await new Promise((resolve, reject) => {
       let command = ffmpeg(finalInputPath);
       let complexFilter = [];
-
-      // Silence Removal
       const effectiveMinDuration = Math.max(0.01, minDuration - leftPadding - rightPadding);
       if (effectiveMinDuration < minDuration) {
-        console.log(`[API] Applying silenceremove: stop_duration=${effectiveMinDuration.toFixed(4)}, stop_threshold=${thresholdDb}dB`);
+        console.log(`[API P1] Applying silenceremove: stop_duration=${effectiveMinDuration.toFixed(4)}, stop_threshold=${thresholdDb}dB`);
         complexFilter.push(`silenceremove=stop_periods=-1:stop_duration=${effectiveMinDuration.toFixed(4)}:stop_threshold=${thresholdDb}dB`);
       } else {
-        console.log(`[API] Skipping silenceremove as effectiveMinDuration (${effectiveMinDuration.toFixed(4)}) >= minDuration (${minDuration.toFixed(4)}) due to padding.`);
-      }
-
-      // Speed/Tempo Filter (Conditional: Only Speed Up)
-      if (actualPlaybackRate > 1.001) { // Only apply if rate > 1.0 (speeding up)
-          let rate = actualPlaybackRate;
-          let tempoFilter = '';
-          console.log(`[API] Applying atempo for calculated rate: ${rate}`);
-          if (rate >= 0.5 && rate <= 100.0) { // Should always be true due to clamping
-              tempoFilter = `atempo=${rate.toFixed(4)}`;
-          }
-          if(tempoFilter) complexFilter.push(tempoFilter);
-      } else {
-          console.log(`[API] Calculated Playback rate <= 1.0 (${actualPlaybackRate.toFixed(4)}). Skipping tempo filter.`);
+        console.log(`[API P1] Skipping silenceremove.`);
       }
       
       if (complexFilter.length > 0) {
-          console.log('[API] Applying Complex Filter:', complexFilter.join(','));
           command = command.audioFilters(complexFilter.join(','));
+      } else {
+         // If no silence removal is applied, we still need to copy the input to intermediate for the next step
+         console.log("[API P1] No silence filter applied, copying input to intermediate path.");
       }
 
       command
         .toFormat('wav')
-        .outputOptions('-ar 44100')
+        .outputOptions('-ar 44100') // Keep consistent format
         .outputOptions('-ac 2')
-        .on('start', (commandLine) => {
-          console.log('[API] Spawned Ffmpeg with command: ' + commandLine);
-        })
+        .on('start', (cmd) => console.log(`[API P1] Spawned Ffmpeg: ${cmd}`))
         .on('error', (err, stdout, stderr) => {
-          console.error('[API] FFmpeg Error:', err.message);
-          console.error('[API] FFmpeg stderr:', stderr);
-          reject(new Error(`FFmpeg processing failed`)); 
+          console.error('[API P1] FFmpeg Error:', err.message);
+          console.error('[API P1] FFmpeg stderr:', stderr);
+          reject(new Error(`FFmpeg Pass 1 (Silence Removal) failed`)); 
         })
-        .on('end', (stdout, stderr) => {
-          console.log('[API] FFmpeg processing finished successfully.');
+        .on('end', () => {
+          console.log('[API P1] FFmpeg Pass 1 finished successfully.');
           resolve();
         })
-        .save(finalOutputPath); // Save to final output path
+        .save(intermediateOutputPath); // Save to intermediate path
     });
-    // --- End FFmpeg Processing ---
+    // --- End FFmpeg Pass 1 ---
 
-    // --- Check FFmpeg Output --- 
-    if (!fs.existsSync(finalOutputPath) || fs.statSync(finalOutputPath).size === 0) {
-      console.error('[API] Output file missing or empty after ffmpeg processing.');
-      throw new Error('Processing resulted in an empty file.');
+    // --- Check Intermediate File --- 
+    if (!fs.existsSync(intermediateOutputPath) || fs.statSync(intermediateOutputPath).size === 0) {
+      console.error('[API] Intermediate file missing or empty after Pass 1.');
+      throw new Error('Silence removal process failed to produce output.');
+    }
+    // --- End Check ---
+
+    // --- Probe Intermediate File Duration --- 
+    let intermediateDuration = null;
+    try {
+        const metadata = await new Promise((resolve, reject) => {
+            ffmpeg.ffprobe(intermediateOutputPath, (err, metadata) => {
+                if (err) reject(err);
+                else resolve(metadata);
+            });
+        });
+        intermediateDuration = metadata?.format?.duration;
+        if (intermediateDuration === null || intermediateDuration === undefined) throw new Error('ffprobe could not extract duration');
+        console.log(`[API Probe] Intermediate Duration (after silence removal): ${intermediateDuration}s`);
+    } catch (probeError) {
+        console.error('[API Probe] Error probing intermediate file duration:', probeError);
+        // If we can't probe, we can't reliably apply target duration. Upload intermediate.
+        console.warn('[API Probe] Could not determine intermediate duration. Skipping speed adjustment.');
+        pathToUpload = intermediateOutputPath; // Mark intermediate for upload
+    }
+    // --- End Probe ---
+
+    let actualPlaybackRate = 1.0;
+    let runSecondPass = false;
+
+    // --- Decide if Speed Adjustment (Pass 2) is Needed --- 
+    if (pathToUpload === null && intermediateDuration !== null && targetDurationParam && targetDurationParam > 0) {
+        // Only adjust speed if intermediate duration is significantly longer than target
+        if (intermediateDuration > targetDurationParam + 0.01) { // Add tolerance
+            actualPlaybackRate = intermediateDuration / targetDurationParam;
+            actualPlaybackRate = Math.max(0.5, Math.min(100.0, actualPlaybackRate)); 
+            console.log(`[API Calc] Intermediate ${intermediateDuration.toFixed(3)}s > Target ${targetDurationParam}s. Calculated rate: ${actualPlaybackRate.toFixed(4)}`);
+            // We only speed up, check if calculated rate > 1
+            if (actualPlaybackRate > 1.001) {
+                 runSecondPass = true;
+            } else {
+                console.log(`[API Calc] Calculated rate ${actualPlaybackRate.toFixed(4)} <= 1.0. Skipping Pass 2.`);
+                 pathToUpload = intermediateOutputPath; // Target duration met or exceeded, upload intermediate
+            }
+        } else {
+            console.log(`[API Calc] Intermediate duration ${intermediateDuration.toFixed(3)}s <= Target ${targetDurationParam}s. Skipping Pass 2.`);
+            pathToUpload = intermediateOutputPath; // Target duration already met, upload intermediate
+        }
+    } else if (pathToUpload === null) {
+        // No target duration or probing failed, just use intermediate result
+        console.log(`[API Calc] No target duration or probe failed. Using intermediate result.`);
+        pathToUpload = intermediateOutputPath;
+    }
+    // --- End Decision Logic ---
+
+    // --- FFmpeg Pass 2: Speed Adjustment (Conditional) --- 
+    if (runSecondPass) {
+        console.log("[API] Starting Pass 2: Speed Adjustment...");
+        await new Promise((resolve, reject) => {
+            let command = ffmpeg(intermediateOutputPath); // Input is the intermediate file
+            let tempoFilter = `atempo=${actualPlaybackRate.toFixed(4)}`;
+            console.log(`[API P2] Applying ${tempoFilter}`);
+            command = command.audioFilters(tempoFilter);
+
+            command
+                .toFormat('wav')
+                .outputOptions('-ar 44100')
+                .outputOptions('-ac 2')
+                .on('start', (cmd) => console.log(`[API P2] Spawned Ffmpeg: ${cmd}`))
+                .on('error', (err, stdout, stderr) => {
+                    console.error('[API P2] FFmpeg Error:', err.message);
+                    console.error('[API P2] FFmpeg stderr:', stderr);
+                    reject(new Error(`FFmpeg Pass 2 (Speed Adjustment) failed`)); 
+                })
+                .on('end', () => {
+                    console.log('[API P2] FFmpeg Pass 2 finished successfully.');
+                    resolve();
+                })
+                .save(finalOutputPath); // Save to final output path
+        });
+        pathToUpload = finalOutputPath; // Mark final output for upload
+    }
+    // --- End FFmpeg Pass 2 ---
+
+    // --- Check Final File for Upload --- 
+    if (!pathToUpload || !fs.existsSync(pathToUpload) || fs.statSync(pathToUpload).size === 0) {
+      console.error(`[API] File to upload (${pathToUpload || 'path unknown'}) missing or empty before S3 upload.`);
+      throw new Error('Processing failed to produce a valid file for upload.');
     }
     // --- End Check ---
     
     // --- Upload to S3 --- 
-    console.log(`[API] Uploading ${finalOutputPath} to S3 bucket ${S3_BUCKET_NAME} as ${s3Key}...`);
-    const fileStream = fs.createReadStream(finalOutputPath);
+    console.log(`[API] Uploading ${pathToUpload} to S3 bucket ${S3_BUCKET_NAME} as ${s3Key}...`);
+    const fileStream = fs.createReadStream(pathToUpload);
     const uploadParams = {
         Bucket: S3_BUCKET_NAME,
         Key: s3Key,
@@ -320,43 +364,43 @@ export default async function handler(req, res) {
         console.log(`[API] Successfully uploaded to S3.`);
     } catch (s3Error) {
         console.error("[API] Error uploading to S3:", s3Error);
-        throw new Error("Failed to upload processed file to storage."); // Throw specific error
+        throw new Error("Failed to upload processed file to storage.");
     }
     // --- End Upload to S3 ---
 
     // --- Send Response (S3 URL) --- 
+    // Construct URL using the S3 Key, which matches the final filename structure
     const fileUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${s3Key}`;
     console.log(`[API] Sending success response with S3 URL: ${fileUrl}`);
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({
       success: true,
-      fileUrl: fileUrl, // Return the S3 URL
-      // Optionally include filename:
-      // filename: outputFilename 
+      fileUrl: fileUrl,
     }));
     // --- End Send Response ---
 
   } catch (processError) {
-    // --- Main Processing Error Handling ---
+    // --- Main Processing Error Handling --- 
     console.error('[API] Error during processing or response sending:', processError);
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ success: false, error: processError instanceof Error ? processError.message : 'Processing failed' }));
-    // --- End Main Processing Error Handling ---
 
   } finally {
       // --- Cleanup --- 
-      // Clean up local ffmpeg output file AFTER potential S3 upload
-      if (finalOutputPath && fs.existsSync(finalOutputPath)) {
-          try { fs.unlinkSync(finalOutputPath); } catch(e){ console.error("Error deleting output temp file:", e); }
+      // Clean up intermediate file
+      if (fs.existsSync(intermediateOutputPath)) {
+          try { fs.unlinkSync(intermediateOutputPath); } catch(e){ console.error("Error deleting intermediate temp file:", e); }
+      }
+      // Clean up final output file (if second pass ran)
+      if (pathToUpload === finalOutputPath && fs.existsSync(finalOutputPath)) {
+           try { fs.unlinkSync(finalOutputPath); } catch(e){ console.error("Error deleting final output temp file:", e); }
       }
       // Clean up input file ONLY if we downloaded it
       if (downloadedTempPath && fs.existsSync(downloadedTempPath)) {
           try { fs.unlinkSync(downloadedTempPath); } catch(e){ console.error("Error deleting downloaded temp file:", e); }
       }
-      // Note: formidable might auto-cleanup uploaded files depending on options/setup.
-      // If using explicit formidable cleanup: fs.unlinkSync(finalInputPath);
       // --- End Cleanup ---
   }
 }
