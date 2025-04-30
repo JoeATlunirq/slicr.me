@@ -497,7 +497,8 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
         leftPadding: leftPadding[0],
         rightPadding: rightPadding[0],
         targetDuration: targetDuration,
-        exportAsSections: exportAsSections
+        exportAsSections: exportAsSections,
+        responseFormat: 'base64'
     };
 
     const formData = new FormData();
