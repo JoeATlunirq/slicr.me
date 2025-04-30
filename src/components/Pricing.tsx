@@ -1,13 +1,15 @@
-
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Check } from "lucide-react";
+import { useState } from "react";
 
 interface PricingProps {
   onGetStarted: () => void;
 }
 
 const Pricing = ({ onGetStarted }: PricingProps) => {
+  const [plan, setPlan] = useState<'month' | 'year'>('month')
+
   const plans = [
     {
       name: "Free Trial",
@@ -58,7 +60,7 @@ const Pricing = ({ onGetStarted }: PricingProps) => {
       <div className="container mx-auto px-4">
         <h2 className="text-3xl md:text-4xl font-bold text-center mb-6">Try For Free, Buy For Life</h2>
         <p className="text-center text-xl text-gray-700 mb-16 max-w-3xl mx-auto">
-          Snipr.me comes as either a one-time purchase or a subscription.
+          Slicr.me comes as either a one-time purchase or a subscription.
           Try the app for free on your own projects!
         </p>
 

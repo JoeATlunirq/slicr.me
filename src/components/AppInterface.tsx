@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, forwardRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -20,27 +20,62 @@ interface AppInterfaceProps {
   onBack: () => void;
 }
 
+// --- Define Type for Persisted State ---
+interface PersistedAppState {
+  thresholdDb?: number[];
+  minDuration?: number[];
+  leftPadding?: number[];
+  rightPadding?: number[];
+  paddingLinked?: boolean;
+  regions?: { start: number; end: number }[];
+  targetDuration?: number | null;
+  appliedPlaybackRate?: number | null;
+  exportAsSections?: boolean;
+  // Note: We don't store hasFile or audioBuffer, user must reload file
+}
+// ------------------------------------
+
 const AppInterface = ({ onBack }: AppInterfaceProps) => {
+  // --- State Initialization with localStorage --- 
+  const [initialStateLoaded, setInitialStateLoaded] = useState(false);
+  const loadState = (): PersistedAppState | null => {
+    try {
+      const savedState = localStorage.getItem('slicrAppState'); // Renamed key
+      if (savedState) {
+        console.log("[State Load] Found saved state.");
+        return JSON.parse(savedState) as PersistedAppState;
+      } else {
+        console.log("[State Load] No saved state found.");
+      }
+    } catch (error) {
+      console.error("[State Load] Error loading or parsing state:", error);
+      localStorage.removeItem('slicrAppState'); // Clear corrupted state
+    }
+    return null;
+  };
+
+  const initialSavedState = loadState();
+
   const [activeTab, setActiveTab] = useState("silence");
   const [selectedFileType, setSelectedFileType] = useState<string | null>(null);
-  const [thresholdDb, setThresholdDb] = useState([-40]);
-  const [minDuration, setMinDuration] = useState([0.2]);
-  const [leftPadding, setLeftPadding] = useState([0.0332]);
-  const [rightPadding, setRightPadding] = useState([0.0332]);
-  const [paddingLinked, setPaddingLinked] = useState(true);
+  const [thresholdDb, setThresholdDb] = useState<number[]>(initialSavedState?.thresholdDb ?? [-40]);
+  const [minDuration, setMinDuration] = useState<number[]>(initialSavedState?.minDuration ?? [0.2]);
+  const [leftPadding, setLeftPadding] = useState<number[]>(initialSavedState?.leftPadding ?? [0.0332]);
+  const [rightPadding, setRightPadding] = useState<number[]>(initialSavedState?.rightPadding ?? [0.0332]);
+  const [paddingLinked, setPaddingLinked] = useState<boolean>(initialSavedState?.paddingLinked ?? true);
   const [dragActive, setDragActive] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isExportProcessing, setIsExportProcessing] = useState(false);
   const [hasFile, setHasFile] = useState(false);
-const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
-const [regions, setRegions] = useState<{ start: number; end: number }[]>([]);
+  const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
+  const [regions, setRegions] = useState<{ start: number; end: number }[]>(initialSavedState?.regions ?? []);
   const timelineRef = useRef<TimelineHandle>(null);
-  const [exportAsSections, setExportAsSections] = useState(false);
+  const [exportAsSections, setExportAsSections] = useState<boolean>(initialSavedState?.exportAsSections ?? false);
   
   // --- State for Target Duration Feature ---
-  const [targetDuration, setTargetDuration] = useState<number | null>(null);
+  const [targetDuration, setTargetDuration] = useState<number | null>(initialSavedState?.targetDuration ?? null);
   const [currentProcessedDuration, setCurrentProcessedDuration] = useState<number | null>(null);
-  const [appliedPlaybackRate, setAppliedPlaybackRate] = useState<number | null>(null);
+  const [appliedPlaybackRate, setAppliedPlaybackRate] = useState<number | null>(initialSavedState?.appliedPlaybackRate ?? null);
   const [displayEstimatedDuration, setDisplayEstimatedDuration] = useState<number | null>(null);
   // ----------------------------------------
 
@@ -81,6 +116,47 @@ const [regions, setRegions] = useState<{ start: number; end: number }[]>([]);
       }
   }, [currentProcessedDuration, appliedPlaybackRate]);
   // ---------------------------------------------------------
+
+  // --- Effect to Save State to localStorage ---
+  useEffect(() => {
+    // Don't save until initial load is done to avoid overwriting with defaults immediately
+    if (!initialStateLoaded) {
+        // Mark initial load complete after first render cycle completes
+        const timer = setTimeout(() => setInitialStateLoaded(true), 0);
+        return () => clearTimeout(timer);
+    }
+    
+    const stateToSave: PersistedAppState = {
+      thresholdDb,
+      minDuration,
+      leftPadding,
+      rightPadding,
+      paddingLinked,
+      regions, // Save auto-detected regions
+      targetDuration,
+      appliedPlaybackRate,
+      exportAsSections,
+    };
+    try {
+      console.log("[State Save] Saving state to localStorage...");
+      localStorage.setItem('slicrAppState', JSON.stringify(stateToSave));
+    } catch (error) {
+      console.error("[State Save] Error saving state:", error);
+      // Handle potential storage errors (e.g., quota exceeded)
+    }
+  }, [
+    thresholdDb,
+    minDuration,
+    leftPadding,
+    rightPadding,
+    paddingLinked,
+    regions,
+    targetDuration,
+    appliedPlaybackRate,
+    exportAsSections,
+    initialStateLoaded // Include to trigger save after initial load
+  ]);
+  // ------------------------------------------
 
   // --- Apply Speed Adjustment Handler ---
   const handleApplySpeedAdjustment = () => {
@@ -697,7 +773,7 @@ const [regions, setRegions] = useState<{ start: number; end: number }[]>([]);
             <Button variant="ghost" onClick={onBack} className="p-2">
               <ArrowLeft className="h-5 w-5" />
             </Button>
-            <h1 className="text-xl font-bold">Snipr.me</h1>
+            <h1 className="text-xl font-bold">Slicr.me</h1>
           </div>
           <div className="flex items-center space-x-2">
             {/* REMOVED Save Project Button */}

@@ -1,4 +1,3 @@
-
 import { Button } from "@/components/ui/button";
 
 interface HeroProps {
@@ -7,17 +6,15 @@ interface HeroProps {
 
 const Hero = ({ onGetStarted }: HeroProps) => {
   return (
-    <section className="bg-gradient-to-b from-gray-50 to-white py-20">
+    <section className="bg-gradient-to-b from-background to-gray-50 py-20 md:py-32">
       <div className="container mx-auto px-4 text-center">
-        <h1 className="text-4xl md:text-6xl font-bold mb-6">
-          Do you spend hours
-          <span className="block text-primary">manually removing silence</span>
-          from your videos?
+        <h1 className="text-4xl md:text-6xl font-extrabold text-foreground mb-6 leading-tight">
+          Video Editing Made <span className="text-primary">Effortless</span>
         </h1>
         
         <div className="max-w-3xl mx-auto mb-10">
-          <p className="text-xl md:text-2xl text-gray-700 mb-4">
-            Snipr.me removes the silence automatically in seconds
+          <p className="text-lg md:text-xl text-muted-foreground mb-10">
+            Slicr.me removes the silence automatically in seconds
           </p>
           <p className="text-lg text-gray-600">
             Finding and removing every little pause takes <em className="font-medium">forever</em>
@@ -36,7 +33,7 @@ const Hero = ({ onGetStarted }: HeroProps) => {
         <div className="bg-white rounded-lg shadow-xl p-8 max-w-4xl mx-auto">
           <h2 className="text-2xl font-bold mb-4">What if it was automatic?</h2>
           <p className="text-lg mb-6">
-            Snipr.me does all this tedious cutting for you.
+            Slicr.me does all this tedious cutting for you.
           </p>
           <p className="text-lg mb-6">
             We don't have to do it by hand any more!

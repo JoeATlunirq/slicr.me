@@ -1,6 +1,5 @@
-
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Scissors, Play, Download, Settings } from "lucide-react";
+import { Scissors, Play, Download, Settings, Zap, FileVideo } from "lucide-react";
 
 const Features = () => {
   const features = [
@@ -35,20 +34,45 @@ const Features = () => {
         </p>
       </div>
 
-      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-8">
-        {features.map((feature, index) => (
-          <Card key={index} className="border-0 shadow-lg hover:shadow-xl transition-shadow">
-            <CardHeader className="flex flex-col items-center space-y-2">
-              <div className="p-3 bg-primary/10 rounded-full">
-                <feature.icon className="h-8 w-8 text-primary" />
-              </div>
-              <CardTitle className="text-xl text-center">{feature.title}</CardTitle>
-            </CardHeader>
-            <CardContent className="text-center">
-              <CardDescription className="text-base">{feature.description}</CardDescription>
-            </CardContent>
-          </Card>
-        ))}
+      <div className="grid md:grid-cols-3 gap-8 mb-16 max-w-6xl mx-auto">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Zap className="w-5 h-5 text-primary"/> Fast & Automatic
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-muted-foreground">
+              Automatically detect and remove silent parts in your videos and podcasts. No manual cutting needed.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Scissors className="w-5 h-5 text-primary"/> Precise Control
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-muted-foreground">
+              Fine-tune silence detection settings and adjust cuts easily on the interactive timeline.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <FileVideo className="w-5 h-5 text-primary"/> Flexible Exports
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-muted-foreground">
+              Export directly to video/audio files or generate edit lists (EDL) for DaVinci Resolve, Premiere Pro, etc.
+            </p>
+          </CardContent>
+        </Card>
       </div>
     </section>
   );
