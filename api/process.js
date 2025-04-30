@@ -11,6 +11,14 @@ import axios from 'axios';
 
 // Set ffmpeg path
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+// Explicitly set ffprobe path (often in the same directory)
+const ffprobePath = path.join(path.dirname(ffmpegInstaller.path), 'ffprobe');
+if (fs.existsSync(ffprobePath)) {
+  ffmpeg.setFfprobePath(ffprobePath);
+  console.log(`[API Init] Set ffprobe path: ${ffprobePath}`);
+} else {
+  console.warn(`[API Init] ffprobe not found at expected location: ${ffprobePath}. Duration calculation might fail.`);
+}
 
 // Keep Vercel specific config for compatibility if deploying there
 export const config = {
@@ -65,6 +73,7 @@ export default async function handler(req, res) {
   let inputPath = null;
   let downloadedTempPath = null;
   let cleanupNeeded = false;
+  let params; // Declare params in the outer scope
 
   try {
     // --- Get Input: File Upload OR URL --- 
@@ -78,13 +87,12 @@ export default async function handler(req, res) {
       });
     });
 
-    // Parameter Parsing (needed early to check for URL)
-    let params;
+    // Parameter Parsing (moved inside main try)
     try {
         if (!fields.params || !fields.params[0]) {
             throw new Error('Missing parameters');
         }
-        params = JSON.parse(fields.params[0]);
+        params = JSON.parse(fields.params[0]); // Assign to outer scope params
         console.log('[API] Received Params:', params);
     } catch (err) {
         console.error('[API] Error parsing parameters:', err);
@@ -146,6 +154,14 @@ export default async function handler(req, res) {
        res.setHeader('Content-Type', 'application/json');
        res.end(JSON.stringify({ success: false, error: 'Internal server error processing input' }));
        return;
+  }
+   // And params should be valid
+  if (!params) {
+      console.error("[API] Internal error: params is null after input processing.");
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ success: false, error: 'Internal server error processing parameters' }));
+      return;
   }
 
   // Use a final variable for input path inside the next try block
