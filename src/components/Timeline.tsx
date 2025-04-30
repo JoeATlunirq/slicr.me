@@ -540,6 +540,17 @@ const Timeline = forwardRef<TimelineHandle, TimelineProps>(({
              plugin.getRegions().filter(r => (r as any).data?.type === 'silence').forEach(r => r.remove());
         }
         updateRegionsState(); // Update internal region list
+    },
+    getDeletedRegions: (): { start: number; end: number }[] => {
+        if (!regionsPluginRef.current) {
+            console.warn("[getDeletedRegions] Regions plugin not ready.");
+            return [];
+        }
+        const deletedRegions = regionsPluginRef.current.getRegions()
+            .filter(r => r.id.startsWith(DELETED_REGION_ID_PREFIX) || (r as any).data?.deleted)
+            .map(r => ({ start: r.start, end: r.end }));
+        console.log("[getDeletedRegions] Returning deleted regions:", deletedRegions);
+        return deletedRegions;
     }
   }));
   // -------------------------------------

@@ -13,6 +13,7 @@ import { audioBufferToWavBlob } from "@/lib/audioUtils";
 // --- Define Ref Handle Type for Timeline ---
 export interface TimelineHandle {
   resetTimeline: () => void;
+  getDeletedRegions: () => { start: number; end: number }[];
 }
 // ------------------------------------------
 
@@ -520,10 +521,12 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
     // ---------------------------------------
 
     try {
-      // TODO: This still needs the proper way to get *all* deleted regions (manual + auto)
-      const regionsToCut = regions.sort((a, b) => a.start - b.start);
+      // Get ALL deleted regions (auto + manual) directly from the Timeline component
+      const regionsToCut = timelineRef.current?.getDeletedRegions() ?? [];
+      regionsToCut.sort((a, b) => a.start - b.start); // Ensure sorted
+
       const audibleSegments = calculateAudibleSegments(audioBuffer, regionsToCut);
-      console.log("Calculated audible segments:", audibleSegments);
+      console.log("Calculated audible segments based on ALL deleted regions:", audibleSegments);
 
       if (exportAsSections) {
           // --- Export Each Audible Segment Separately ---
@@ -578,6 +581,10 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
              return;
           }
 
+          // --- Log duration before download --- 
+          console.log(`[Export Full] Final combined buffer duration BEFORE download: ${combinedBuffer.duration.toFixed(3)}s. Expected (approx): ${audioBuffer.duration.toFixed(3)}s (minus cuts) / ${appliedPlaybackRate?.toFixed(2) ?? 1.0}`);
+          // -------------------------------------
+
           // Convert final buffer (potentially stretched) to WAV and download
           downloadCombinedAudio(combinedBuffer, "processed_audio.wav");
           toast({ title: "Export Complete!", description: "Processed audio exported as single WAV file." });
@@ -614,7 +621,11 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
         lastEndTime = regionsToCut[i + 1].end;
     }
 
-    if (lastEndTime < totalDuration) {
+    // If the first segment added was the *entire* duration (because no cuts),
+    // we don't need to check for a segment after the "last" cut.
+    const addedFullDurationInitially = audibleSegments.length === 1 && audibleSegments[0].start === 0 && audibleSegments[0].end === totalDuration;
+
+    if (!addedFullDurationInitially && lastEndTime < totalDuration) {
         audibleSegments.push({ start: lastEndTime, end: totalDuration });
     }
     return audibleSegments;
@@ -679,6 +690,9 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
   // Downloads a given AudioBuffer as a WAV file (for segments)
   const downloadAudioSegment = async (segmentBuffer: AudioBuffer, index: number) => {
       if (!segmentBuffer || segmentBuffer.length === 0) return; 
+      // --- Log duration before download --- 
+      console.log(`[Export Segment ${index}] Final segment buffer duration BEFORE download: ${segmentBuffer.duration.toFixed(3)}s`);
+      // -------------------------------------
       const wavBlob = audioBufferToWavBlob(segmentBuffer);
       const url = URL.createObjectURL(wavBlob);
       const a = document.createElement('a');
