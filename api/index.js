@@ -204,13 +204,13 @@ export default async function handler(req, res) {
   }
 }
 
-// Create and start the HTTP server only if this script is run directly (ESM way)
-// Convert the entry point script path (process.argv[1]) to a file URL
-// Compare it with the current module's URL (import.meta.url)
+// REMOVED: Standalone server startup logic
+/*
 const entryPointUrl = pathToFileURL(process.argv[1]).href;
 if (import.meta.url === entryPointUrl) {
   const PORT = process.env.PORT || 3001;
   http.createServer(handler).listen(PORT, () => {
     console.log(`[API Server] Listening on port ${PORT}`);
   });
-} 
+}
+*/ 

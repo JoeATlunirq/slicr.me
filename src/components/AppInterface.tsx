@@ -232,6 +232,11 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
       const decodedAudio = await audioCtx.decodeAudioData(arrayBuffer);
       setAudioBuffer(decodedAudio);
       setHasFile(true);
+      setRegions([]); // Clear previous auto-regions on new file load
+      setAppliedPlaybackRate(null); // Also clear speed adjustments
+      setTargetDuration(null); // Clear target duration
+      timelineRef.current?.resetTimeline(); // Ensure timeline visuals reset too
+
       toast({
         title: "Processing complete!",
         description: "Your audio file is ready for editing.",
