@@ -150,7 +150,7 @@ export default async function handler(req, res) {
 
   // Use a final variable for input path inside the next try block
   const finalInputPath = inputPath;
-  let finalOutputPath: string | null = null; 
+  let finalOutputPath = null;
 
   try { // Wrap the main processing and cleanup
 
