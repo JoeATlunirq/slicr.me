@@ -7,6 +7,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import http from 'http';
 import { pathToFileURL } from 'url';
 import process from 'process';
+import axios from 'axios';
 
 // Set ffmpeg path
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
@@ -17,6 +18,23 @@ export const config = {
     bodyParser: false,
   },
 };
+
+// Helper to download file from URL
+async function downloadFile(url, outputPath) {
+  const response = await axios({
+    method: 'GET',
+    url: url,
+    responseType: 'stream',
+  });
+
+  const writer = fs.createWriteStream(outputPath);
+  response.data.pipe(writer);
+
+  return new Promise((resolve, reject) => {
+    writer.on('finish', resolve);
+    writer.on('error', reject);
+  });
+}
 
 // Export default handler function
 export default async function handler(req, res) {
@@ -44,9 +62,12 @@ export default async function handler(req, res) {
   const form = formidable({});
   let fields;
   let files;
+  let inputPath = null;
+  let downloadedTempPath = null;
+  let cleanupNeeded = false;
 
   try {
-    // Parse req directly (Node http request object)
+    // --- Get Input: File Upload OR URL --- 
     [fields, files] = await new Promise((resolve, reject) => {
       form.parse(req, (err, fields, files) => {
         if (err) {
@@ -56,93 +77,140 @@ export default async function handler(req, res) {
         resolve([fields, files]);
       });
     });
-  } catch (err) {
-    console.error('[API] Error parsing form data:', err);
-    res.statusCode = 400;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ success: false, error: 'Error parsing form data' }));
-    return;
-  }
 
-  let params;
-  try {
-    if (!fields.params || !fields.params[0]) {
-      throw new Error('Missing parameters');
+    // Parameter Parsing (needed early to check for URL)
+    let params;
+    try {
+        if (!fields.params || !fields.params[0]) {
+            throw new Error('Missing parameters');
+        }
+        params = JSON.parse(fields.params[0]);
+        console.log('[API] Received Params:', params);
+    } catch (err) {
+        console.error('[API] Error parsing parameters:', err);
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ success: false, error: 'Invalid parameters format' }));
+        return;
     }
-    params = JSON.parse(fields.params[0]);
-    console.log('[API] Received Params:', params);
+
+    if (files.audioFile && files.audioFile[0]) {
+        // Option 1: Use uploaded file
+        const inputFile = files.audioFile[0];
+        inputPath = inputFile.filepath; // Temporary path from formidable
+        cleanupNeeded = true; // Formidable might clean up, but good to track
+        console.log(`[API] Using uploaded file: ${inputPath}`);
+    } else if (fields.audioUrl && typeof fields.audioUrl[0] === 'string') {
+        // Option 2: Download from URL
+        const audioUrl = fields.audioUrl[0];
+        console.log(`[API] Attempting to download from URL: ${audioUrl}`);
+        try {
+            const tempFilename = `downloaded_${Date.now()}${path.extname(new URL(audioUrl).pathname) || '.tmp'}`;
+            downloadedTempPath = path.join(os.tmpdir(), tempFilename);
+            await downloadFile(audioUrl, downloadedTempPath);
+            inputPath = downloadedTempPath;
+            cleanupNeeded = true; // We definitely need to clean this up
+            console.log(`[API] Successfully downloaded to: ${inputPath}`);
+        } catch (downloadError) {
+            console.error('[API] Error downloading file:', downloadError);
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: false, error: 'Failed to download audio from URL' }));
+            if (downloadedTempPath && fs.existsSync(downloadedTempPath)) {
+                fs.unlinkSync(downloadedTempPath); // Clean up partial download
+            }
+            return;
+        }
+    } else {
+        // No valid input found
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ success: false, error: 'No audio file uploaded or audio URL provided' }));
+        return;
+    }
+    // --- End Get Input ---
+
   } catch (err) {
-    console.error('[API] Error parsing parameters:', err);
+    console.error('[API] Error processing input:', err);
     res.statusCode = 400;
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ success: false, error: 'Invalid parameters format' }));
+    res.end(JSON.stringify({ success: false, error: 'Error processing input data' }));
     return;
   }
 
-  if (!files.audioFile || !files.audioFile[0]) {
-    res.statusCode = 400;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ success: false, error: 'No audio file uploaded' }));
-    return;
+  // At this point, inputPath should be valid
+  if (!inputPath) {
+       // This case should theoretically be caught above, but belt-and-suspenders
+       console.error("[API] Internal error: inputPath is null after input processing.");
+       res.statusCode = 500;
+       res.setHeader('Content-Type', 'application/json');
+       res.end(JSON.stringify({ success: false, error: 'Internal server error processing input' }));
+       return;
   }
 
-  const inputFile = files.audioFile[0];
-  const inputPath = inputFile.filepath;
-  const safeOriginalFilename = inputFile.originalFilename?.replace(/[^a-z0-9_.-]/gi, '_') || 'audio.wav';
-  const outputFilename = `processed_${path.parse(safeOriginalFilename).name}_${Date.now()}.wav`;
-  const outputPath = path.join(os.tmpdir(), outputFilename);
+  // Use a final variable for input path inside the next try block
+  const finalInputPath = inputPath;
+  let finalOutputPath: string | null = null; 
 
-  console.log(`[API] Input File Path: ${inputPath}`);
-  console.log(`[API] Output File Path: ${outputPath}`);
-  console.log(`[API] FFmpeg Path: ${ffmpegInstaller.path}`);
+  try { // Wrap the main processing and cleanup
 
-  // --- Get Original Duration & Calculate Rate --- 
-  let originalDuration = null;
-  let actualPlaybackRate = 1.0; // Default to 1.0
-  try {
-      const metadata = await new Promise((resolve, reject) => {
-          ffmpeg.ffprobe(inputPath, (err, metadata) => {
-              if (err) reject(err);
-              else resolve(metadata);
-          });
-      });
-      originalDuration = metadata?.format?.duration;
-      console.log(`[API] Original Duration: ${originalDuration}s`);
+    // --- Determine Output Path --- 
+    // Use original filename from upload OR derive from URL OR default
+    const originalFilename = files?.audioFile?.[0]?.originalFilename 
+                              || (fields?.audioUrl?.[0] ? path.basename(new URL(fields.audioUrl[0]).pathname) : null) 
+                              || 'audio.wav'; 
+    const safeOriginalFilename = originalFilename.replace(/[^a-z0-9_.-]/gi, '_');
+    const outputFilename = `processed_${path.parse(safeOriginalFilename).name}_${Date.now()}.wav`;
+    finalOutputPath = path.join(os.tmpdir(), outputFilename);
+    // -----------------------------
 
-      const targetDurationParam = params.targetDuration ? parseFloat(params.targetDuration) : null;
-      
-      if (originalDuration && targetDurationParam && targetDurationParam > 0 && Math.abs(originalDuration - targetDurationParam) > 0.01) { // Check if target is valid and different
-          actualPlaybackRate = originalDuration / targetDurationParam;
-          // Clamp rate to ffmpeg's atempo filter limits (0.5 to 100.0)
-          actualPlaybackRate = Math.max(0.5, Math.min(100.0, actualPlaybackRate));
-          console.log(`[API] Target duration ${targetDurationParam}s requested. Calculated rate: ${actualPlaybackRate.toFixed(4)}`);
-      } else {
-         console.log(`[API] No valid target duration specified or it matches original duration. Using rate: 1.0`);
-         actualPlaybackRate = 1.0;
-      }
-  } catch (probeError) {
-      console.error('[API] Error probing audio file duration:', probeError);
-      // Decide if we should fail or just continue without speed change
-      // Let's continue without speed change for robustness
-      actualPlaybackRate = 1.0;
-      console.warn('[API] Could not determine original duration. Skipping speed adjustment.');
-  }
-  // --- End Duration & Rate Calc ---
+    console.log(`[API] Input Path for Processing: ${finalInputPath}`);
+    console.log(`[API] Output Path: ${finalOutputPath}`);
+    console.log(`[API] FFmpeg Path: ${ffmpegInstaller.path}`);
 
-  // --- Input Validation (Basic) ---
-  const thresholdDb = parseFloat(params.thresholdDb ?? -40);
-  const minDuration = parseFloat(params.minDuration ?? 0.2);
-  const leftPadding = parseFloat(params.leftPadding ?? 0.0332);
-  const rightPadding = parseFloat(params.rightPadding ?? 0.0332);
-  // removed appliedPlaybackRate validation, calculated above
-  // ---------------------------------
+    // --- Get Original Duration & Calculate Rate --- 
+    let originalDuration = null;
+    let actualPlaybackRate = 1.0;
+    try {
+        const metadata = await new Promise((resolve, reject) => {
+            ffmpeg.ffprobe(finalInputPath, (err, metadata) => {
+                if (err) reject(err);
+                else resolve(metadata);
+            });
+        });
+        originalDuration = metadata?.format?.duration;
+        console.log(`[API] Original Duration: ${originalDuration}s`);
 
-  try {
+        const targetDurationParam = params.targetDuration ? parseFloat(params.targetDuration) : null;
+        
+        if (originalDuration && targetDurationParam && targetDurationParam > 0 && Math.abs(originalDuration - targetDurationParam) > 0.01) {
+            actualPlaybackRate = originalDuration / targetDurationParam;
+            actualPlaybackRate = Math.max(0.5, Math.min(100.0, actualPlaybackRate)); 
+            console.log(`[API] Target duration ${targetDurationParam}s requested. Calculated rate: ${actualPlaybackRate.toFixed(4)}`);
+        } else {
+            console.log(`[API] No valid target duration specified or it matches original duration. Using rate: 1.0`);
+            actualPlaybackRate = 1.0;
+        }
+    } catch (probeError) {
+        console.error('[API] Error probing audio file duration:', probeError);
+        actualPlaybackRate = 1.0;
+        console.warn('[API] Could not determine original duration. Skipping speed adjustment.');
+    }
+    // --- End Duration & Rate Calc ---
+
+    // --- Input Validation --- 
+    const thresholdDb = parseFloat(params.thresholdDb ?? -40);
+    const minDuration = parseFloat(params.minDuration ?? 0.2);
+    const leftPadding = parseFloat(params.leftPadding ?? 0.0332);
+    const rightPadding = parseFloat(params.rightPadding ?? 0.0332);
+    // ------------------------
+
+    // --- FFmpeg Processing --- 
     await new Promise((resolve, reject) => {
-      let command = ffmpeg(inputPath);
+      let command = ffmpeg(finalInputPath);
       let complexFilter = [];
 
-      // --- Silence Removal Filter --- 
+      // Silence Removal
       const effectiveMinDuration = Math.max(0.01, minDuration - leftPadding - rightPadding);
       if (effectiveMinDuration < minDuration) {
         console.log(`[API] Applying silenceremove: stop_duration=${effectiveMinDuration.toFixed(4)}, stop_threshold=${thresholdDb}dB`);
@@ -151,23 +219,18 @@ export default async function handler(req, res) {
         console.log(`[API] Skipping silenceremove as effectiveMinDuration (${effectiveMinDuration.toFixed(4)}) >= minDuration (${minDuration.toFixed(4)}) due to padding.`);
       }
 
-      // --- Speed/Tempo Filter (using calculated rate) --- 
-      if (actualPlaybackRate && Math.abs(actualPlaybackRate - 1.0) > 0.001) { // Check if rate needs applying
+      // Speed/Tempo Filter (Conditional: Only Speed Up)
+      if (actualPlaybackRate > 1.001) { // Only apply if rate > 1.0 (speeding up)
           let rate = actualPlaybackRate;
           let tempoFilter = '';
           console.log(`[API] Applying atempo for calculated rate: ${rate}`);
-          // atempo filter range is 0.5 to 100.0. Apply multiple times if needed.
-          if (rate >= 0.5 && rate <= 100.0) {
+          if (rate >= 0.5 && rate <= 100.0) { // Should always be true due to clamping
               tempoFilter = `atempo=${rate.toFixed(4)}`;
-          } else {
-              // This case shouldn't happen due to clamping above, but log just in case.
-              console.warn(`[API] Calculated playback rate ${rate} is outside atempo range (0.5-100.0). Skipping tempo adjustment.`);
           }
           if(tempoFilter) complexFilter.push(tempoFilter);
       } else {
-          console.log("[API] Playback rate is 1.0. Skipping tempo filter.");
+          console.log(`[API] Calculated Playback rate <= 1.0 (${actualPlaybackRate.toFixed(4)}). Skipping tempo filter.`);
       }
-      // --------------------------
       
       if (complexFilter.length > 0) {
           console.log('[API] Applying Complex Filter:', complexFilter.join(','));
@@ -184,34 +247,24 @@ export default async function handler(req, res) {
         .on('error', (err, stdout, stderr) => {
           console.error('[API] FFmpeg Error:', err.message);
           console.error('[API] FFmpeg stderr:', stderr);
-          if (fs.existsSync(outputPath)) {
-            try { fs.unlinkSync(outputPath); } catch(e){ console.error("Error deleting temp file on error:", e); }
-          }
           reject(new Error(`FFmpeg processing failed`)); 
         })
         .on('end', (stdout, stderr) => {
           console.log('[API] FFmpeg processing finished successfully.');
           resolve();
         })
-        .save(outputPath);
+        .save(finalOutputPath); // Save to final output path
     });
-  } catch (ffmpegError) {
-    console.error("[API] Ffmpeg Promise Error:", ffmpegError);
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ success: false, error: ffmpegError.message || 'FFmpeg processing failed' }));
-    return;
-  }
+    // --- End FFmpeg Processing ---
 
-  try {
-    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+    // --- Send Response --- 
+    if (!fs.existsSync(finalOutputPath) || fs.statSync(finalOutputPath).size === 0) {
       console.error('[API] Output file missing or empty after ffmpeg processing.');
       throw new Error('Processing resulted in an empty file.');
     }
 
-    const processedData = fs.readFileSync(outputPath);
+    const processedData = fs.readFileSync(finalOutputPath);
     const base64Data = processedData.toString('base64');
-    fs.unlinkSync(outputPath);
 
     console.log(`[API] Sending success response with file: ${outputFilename}`);
     res.statusCode = 200;
@@ -220,14 +273,29 @@ export default async function handler(req, res) {
       success: true,
       files: [{ filename: outputFilename, data: base64Data }],
     }));
-  } catch (err) {
-    console.error('[API] Error reading/encoding/sending processed file:', err);
-    if (fs.existsSync(outputPath)) {
-        try { fs.unlinkSync(outputPath); } catch(e){ console.error("Error deleting temp file on error:", e); }
-    }
+    // --- End Send Response ---
+
+  } catch (processError) {
+    // --- Main Processing Error Handling ---
+    console.error('[API] Error during processing or response sending:', processError);
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ success: false, error: err.message || 'Error handling processed file' }));
+    res.end(JSON.stringify({ success: false, error: processError instanceof Error ? processError.message : 'Processing failed' }));
+    // --- End Main Processing Error Handling ---
+
+  } finally {
+      // --- Cleanup --- 
+      // Clean up output file if it exists (maybe it failed before sending)
+      if (finalOutputPath && fs.existsSync(finalOutputPath)) {
+          try { fs.unlinkSync(finalOutputPath); } catch(e){ console.error("Error deleting output temp file:", e); }
+      }
+      // Clean up input file ONLY if we downloaded it
+      if (downloadedTempPath && fs.existsSync(downloadedTempPath)) {
+          try { fs.unlinkSync(downloadedTempPath); } catch(e){ console.error("Error deleting downloaded temp file:", e); }
+      }
+      // Note: formidable might auto-cleanup uploaded files depending on options/setup.
+      // If using explicit formidable cleanup: fs.unlinkSync(finalInputPath);
+      // --- End Cleanup ---
   }
 }
 

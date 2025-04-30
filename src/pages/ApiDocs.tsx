@@ -10,21 +10,42 @@ const ApiDocs: React.FC = () => {
   const curlExample = `curl -X POST \\
   https://www.slicr.me/api/process \\
   -F 'audioFile=@/path/to/your/audio.wav' \\
+  -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "targetDuration": 60.0}'
+
+# OR using URL:
+curl -X POST \\
+  https://www.slicr.me/api/process \\
+  -F 'audioUrl=https://example.com/audio.mp3' \\
   -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "targetDuration": 60.0}'`;
 
-  const jsExample = `const audioFile = /* get your File object */;
-const params = {
-    thresholdDb: -40,       // Silence threshold in dBFS (-60 to 0)
-    minDuration: 0.2,       // Minimum duration of silence in seconds
-    leftPadding: 0.05,      // Padding before cut in seconds
-    rightPadding: 0.05,     // Padding after cut in seconds
-    targetDuration: 60.0,   // Optional: Target duration in seconds. null/omitted for original speed.
-    // exportAsSections: false // Currently not implemented server-side
+  const jsExample = `// Option 1: Using File object
+const audioFile = /* get your File object */;
+const paramsFile = {
+    thresholdDb: -40,       
+    minDuration: 0.2,       
+    leftPadding: 0.05,      
+    rightPadding: 0.05,    
+    targetDuration: 60.0,   // Optional: Target duration > 0. Speeds up only, doesn't slow down.
 };
+const formDataFile = new FormData();
+formDataFile.append('audioFile', audioFile);
+formDataFile.append('params', JSON.stringify(paramsFile));
 
-const formData = new FormData();
-formData.append('audioFile', audioFile);
-formData.append('params', JSON.stringify(params));
+// Option 2: Using URL
+const audioUrl = "https://example.com/audio.mp3";
+const paramsUrl = {
+    thresholdDb: -40,       
+    minDuration: 0.2,       
+    leftPadding: 0.05,      
+    rightPadding: 0.05,    
+    targetDuration: 60.0,   // Optional: Target duration > 0. Speeds up only, doesn't slow down.
+};
+const formDataUrl = new FormData();
+formDataUrl.append('audioUrl', audioUrl);
+formDataUrl.append('params', JSON.stringify(paramsUrl));
+
+// Choose formDataFile or formDataUrl
+const formData = formDataFile; // Or formDataUrl
 
 fetch('https://www.slicr.me/api/process', {
     method: 'POST',
@@ -101,9 +122,10 @@ fetch('https://www.slicr.me/api/process', {
             <p>The request must be sent as <code className="bg-muted px-1 rounded">multipart/form-data</code> with the following fields:</p>
             <ul className="list-disc list-inside space-y-2">
               <li>
-                <strong><code className="bg-muted px-1 rounded">audioFile</code></strong> (Required)
+                <strong><code className="bg-muted px-1 rounded">audioFile</code></strong> OR <strong><code className="bg-muted px-1 rounded">audioUrl</code></strong> (Required - Provide ONE)
                 <ul className="list-circle list-inside ml-4 text-sm text-muted-foreground">
-                  <li>The audio file to be processed (e.g., WAV, MP3, FLAC). FFmpeg compatibility applies.</li>
+                  <li><code className="font-mono">audioFile</code>: The audio file blob to be processed.</li>
+                  <li><code className="font-mono">audioUrl</code>: A publicly accessible URL string pointing to the audio file.</li>
                 </ul>
               </li>
               <li>
@@ -159,7 +181,7 @@ fetch('https://www.slicr.me/api/process', {
                  <tr>
                    <td className="border border-border p-2"><code className="font-mono">targetDuration</code></td>
                    <td className="border border-border p-2">Number | null</td>
-                   <td className="border border-border p-2">Target final duration in seconds. The backend calculates the necessary speed multiplier (0.5x-100x) to reach this duration based on the original audio length. Use <code className="font-mono">null</code> or omit for original speed/duration.</td>
+                   <td className="border border-border p-2">Target final duration in seconds. If provided and **shorter** than the original duration, the audio will be sped up (pitch preserved) to meet the target. If omitted, null, or **longer** than the original duration, the audio speed is not changed.</td>
                    <td className="border border-border p-2"><code className="font-mono">60.0</code> or <code className="font-mono">null</code></td>
                  </tr>
                   {/* <tr>
