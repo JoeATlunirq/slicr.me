@@ -313,7 +313,6 @@ export default async function handler(req, res) {
         Bucket: S3_BUCKET_NAME,
         Key: s3Key,
         Body: fileStream,
-        ACL: 'public-read', // Make object publicly readable via URL
         ContentType: 'audio/wav' // Set appropriate content type
     };
     try {
