@@ -8,16 +8,34 @@ import http from 'http';
 import { pathToFileURL } from 'url';
 import process from 'process';
 import axios from 'axios';
+import ffprobeStatic from 'ffprobe-static';
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+
+// --- AWS S3 Configuration --- 
+const { AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET_NAME } = process.env;
+
+if (!AWS_ACCESS_KEY_ID || !AWS_SECRET_ACCESS_KEY || !AWS_REGION || !S3_BUCKET_NAME) {
+    console.error("[API Init] Missing required AWS environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET_NAME).");
+    // Optionally throw an error or handle differently if needed for local dev without env vars
+}
+
+const s3Client = new S3Client({
+    region: AWS_REGION,
+    credentials: {
+        accessKeyId: AWS_ACCESS_KEY_ID || '', // Provide default empty string if undefined
+        secretAccessKey: AWS_SECRET_ACCESS_KEY || ''
+    }
+});
+// --- End AWS S3 Configuration ---
 
 // Set ffmpeg path
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
-// Explicitly set ffprobe path (often in the same directory)
-const ffprobePath = path.join(path.dirname(ffmpegInstaller.path), 'ffprobe');
-if (fs.existsSync(ffprobePath)) {
-  ffmpeg.setFfprobePath(ffprobePath);
-  console.log(`[API Init] Set ffprobe path: ${ffprobePath}`);
-} else {
-  console.warn(`[API Init] ffprobe not found at expected location: ${ffprobePath}. Duration calculation might fail.`);
+// Explicitly set ffprobe path using ffprobe-static
+try {
+    ffmpeg.setFfprobePath(ffprobeStatic.path);
+    console.log(`[API Init] Set ffprobe path using ffprobe-static: ${ffprobeStatic.path}`);
+} catch (err) {
+    console.error("[API Init] Error setting ffprobe path from ffprobe-static:", err);
 }
 
 // Keep Vercel specific config for compatibility if deploying there
@@ -171,13 +189,14 @@ export default async function handler(req, res) {
   try { // Wrap the main processing and cleanup
 
     // --- Determine Output Path --- 
-    // Use original filename from upload OR derive from URL OR default
     const originalFilename = files?.audioFile?.[0]?.originalFilename 
                               || (fields?.audioUrl?.[0] ? path.basename(new URL(fields.audioUrl[0]).pathname) : null) 
                               || 'audio.wav'; 
     const safeOriginalFilename = originalFilename.replace(/[^a-z0-9_.-]/gi, '_');
     const outputFilename = `processed_${path.parse(safeOriginalFilename).name}_${Date.now()}.wav`;
     finalOutputPath = path.join(os.tmpdir(), outputFilename);
+    // Define S3 Key (using the same filename for consistency)
+    const s3Key = outputFilename; 
     // -----------------------------
 
     console.log(`[API] Input Path for Processing: ${finalInputPath}`);
@@ -273,21 +292,42 @@ export default async function handler(req, res) {
     });
     // --- End FFmpeg Processing ---
 
-    // --- Send Response --- 
+    // --- Check FFmpeg Output --- 
     if (!fs.existsSync(finalOutputPath) || fs.statSync(finalOutputPath).size === 0) {
       console.error('[API] Output file missing or empty after ffmpeg processing.');
       throw new Error('Processing resulted in an empty file.');
     }
+    // --- End Check ---
+    
+    // --- Upload to S3 --- 
+    console.log(`[API] Uploading ${finalOutputPath} to S3 bucket ${S3_BUCKET_NAME} as ${s3Key}...`);
+    const fileStream = fs.createReadStream(finalOutputPath);
+    const uploadParams = {
+        Bucket: S3_BUCKET_NAME,
+        Key: s3Key,
+        Body: fileStream,
+        ACL: 'public-read', // Make object publicly readable via URL
+        ContentType: 'audio/wav' // Set appropriate content type
+    };
+    try {
+        await s3Client.send(new PutObjectCommand(uploadParams));
+        console.log(`[API] Successfully uploaded to S3.`);
+    } catch (s3Error) {
+        console.error("[API] Error uploading to S3:", s3Error);
+        throw new Error("Failed to upload processed file to storage."); // Throw specific error
+    }
+    // --- End Upload to S3 ---
 
-    const processedData = fs.readFileSync(finalOutputPath);
-    const base64Data = processedData.toString('base64');
-
-    console.log(`[API] Sending success response with file: ${outputFilename}`);
+    // --- Send Response (S3 URL) --- 
+    const fileUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${s3Key}`;
+    console.log(`[API] Sending success response with S3 URL: ${fileUrl}`);
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({
       success: true,
-      files: [{ filename: outputFilename, data: base64Data }],
+      fileUrl: fileUrl, // Return the S3 URL
+      // Optionally include filename:
+      // filename: outputFilename 
     }));
     // --- End Send Response ---
 
@@ -301,7 +341,7 @@ export default async function handler(req, res) {
 
   } finally {
       // --- Cleanup --- 
-      // Clean up output file if it exists (maybe it failed before sending)
+      // Clean up local ffmpeg output file AFTER potential S3 upload
       if (finalOutputPath && fs.existsSync(finalOutputPath)) {
           try { fs.unlinkSync(finalOutputPath); } catch(e){ console.error("Error deleting output temp file:", e); }
       }

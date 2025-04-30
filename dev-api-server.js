@@ -1,6 +1,10 @@
+import dotenv from 'dotenv';
 import http from 'http';
 import { pathToFileURL } from 'url';
 import path from 'path';
+
+// Load environment variables from .env file
+dotenv.config();
 
 // Import the handler function from the actual API file
 // Use dynamic import() because api/index.js is an ES module

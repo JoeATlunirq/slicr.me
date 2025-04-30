@@ -69,13 +69,7 @@ fetch('https://www.slicr.me/api/process', {
 
   const successResponseExample = `{
   "success": true,
-  "files": [
-    {
-      "filename": "processed_audio_1746023831506.wav",
-      "data": "UklGRiQ...AoADAZG9s=" // Base64 encoded WAV data (truncated)
-    }
-  ]
-  // Note: Currently only returns a single file even if exportAsSections was requested
+  "fileUrl": "https://your-bucket-name.s3.your-region.amazonaws.com/processed_audio_1234567890.wav"
 }`;
 
   const errorResponseExample = `{
@@ -219,7 +213,7 @@ fetch('https://www.slicr.me/api/process', {
              <p>The API will respond with a JSON object.</p>
              <div>
                 <h4 className="font-semibold mb-2">Success (Status Code 200):</h4>
-                 <p className="text-sm mb-2">Indicates successful processing. The <code className="bg-muted px-1 rounded">files</code> array contains the processed file(s).</p>
+                 <p className="text-sm mb-2">Indicates successful processing. The <code className="bg-muted px-1 rounded">fileUrl</code> field contains a publicly accessible URL to the processed WAV file stored in AWS S3.</p>
                 <CodeBlock language="json" code={successResponseExample} />
              </div>
              <div>
