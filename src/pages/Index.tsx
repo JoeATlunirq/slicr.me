@@ -22,7 +22,7 @@ const Index = () => {
       {/* Navigation */}
       <header className="container mx-auto px-4 py-6 flex justify-between items-center">
         <div className="flex items-center">
-          <h1 className="text-2xl font-bold">Silence<span className="text-primary">Cut</span></h1>
+          <h1 className="text-2xl font-bold">Snipr<span className="text-primary">.me</span></h1>
         </div>
         <div className="flex items-center gap-4">
           <Button variant="outline" onClick={() => setShowApp(true)}>
@@ -51,7 +51,7 @@ const Index = () => {
         <div className="container mx-auto px-4">
           <div className="flex flex-col md:flex-row justify-between">
             <div className="mb-8 md:mb-0">
-              <h2 className="text-xl font-bold mb-4">SilenceCut</h2>
+              <h2 className="text-xl font-bold mb-4">Snipr.me</h2>
               <p className="text-gray-600 max-w-md">
                 Automatically remove silence from your videos and save hours of editing time.
               </p>
@@ -85,7 +85,7 @@ const Index = () => {
             </div>
           </div>
           <div className="border-t border-gray-200 mt-12 pt-6">
-            <p className="text-gray-600 text-center">© {new Date().getFullYear()} SilenceCut. All rights reserved.</p>
+            <p className="text-gray-600 text-center">© {new Date().getFullYear()} Snipr.meAll rights reserved.</p>
           </div>
         </div>
       </footer>

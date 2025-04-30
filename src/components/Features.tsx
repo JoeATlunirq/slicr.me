@@ -29,9 +29,9 @@ const Features = () => {
   return (
     <section id="features" className="py-20">
       <div className="text-center mb-16">
-        <h2 className="text-3xl md:text-4xl font-bold mb-4">Remove the pauses with SilenceCut</h2>
+        <h2 className="text-3xl md:text-4xl font-bold mb-4">Remove the pauses with Snipr.me</h2>
         <p className="text-xl text-gray-700 max-w-3xl mx-auto">
-          SilenceCut is an automatic video editing tool that finds and removes silent parts in your videos and podcasts.
+          Snipr.me is an automatic video editing tool that finds and removes silent parts in your videos and podcasts.
         </p>
       </div>
 

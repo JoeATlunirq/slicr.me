@@ -17,7 +17,7 @@ const Hero = ({ onGetStarted }: HeroProps) => {
         
         <div className="max-w-3xl mx-auto mb-10">
           <p className="text-xl md:text-2xl text-gray-700 mb-4">
-            SilenceCut removes the silence automatically in seconds
+            Snipr.me removes the silence automatically in seconds
           </p>
           <p className="text-lg text-gray-600">
             Finding and removing every little pause takes <em className="font-medium">forever</em>
@@ -36,7 +36,7 @@ const Hero = ({ onGetStarted }: HeroProps) => {
         <div className="bg-white rounded-lg shadow-xl p-8 max-w-4xl mx-auto">
           <h2 className="text-2xl font-bold mb-4">What if it was automatic?</h2>
           <p className="text-lg mb-6">
-            SilenceCut does all this tedious cutting for you.
+            Snipr.me does all this tedious cutting for you.
           </p>
           <p className="text-lg mb-6">
             We don't have to do it by hand any more!

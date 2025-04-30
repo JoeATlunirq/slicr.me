@@ -6,7 +6,7 @@ const HowItWorks = () => {
     {
       number: 1,
       title: "Add your files",
-      description: "Upload your video or audio files. SilenceCut supports multiple tracks while keeping them in perfect sync.",
+      description: "Upload your video or audio files. Snipr.me supports multiple tracks while keeping them in perfect sync.",
       features: [
         "MP4, WAV, M4A, and more formats supported",
         "Multiple camera angles and audio tracks",
@@ -38,7 +38,7 @@ const HowItWorks = () => {
   return (
     <section id="how-it-works" className="py-20 bg-gray-50">
       <div className="container mx-auto px-4">
-        <h2 className="text-3xl md:text-4xl font-bold text-center mb-16">How SilenceCut Works</h2>
+        <h2 className="text-3xl md:text-4xl font-bold text-center mb-16">How Snipr.me Works</h2>
         
         <div className="space-y-20">
           {steps.map((step, index) => (

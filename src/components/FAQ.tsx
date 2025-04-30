@@ -22,15 +22,15 @@ const FAQ = () => {
     },
     {
       question: "What file formats does it support?",
-      answer: "SilenceCut can read most common audio and video formats, like MP4, MKV, MP3, M4A, WAV, and so on. It can export to MP4, M4A, and WAV."
+      answer: "Snipr.me can read most common audio and video formats, like MP4, MKV, MP3, M4A, WAV, and so on. It can export to MP4, M4A, and WAV."
     },
     {
-      question: "Can I use SilenceCut with my favorite video editor?",
-      answer: "Yes! SilenceCut can export edit lists in XML format that can be imported into popular video editing software like Adobe Premiere, DaVinci Resolve, Final Cut Pro, and ScreenFlow."
+      question: "Can I use Snipr.me with my favorite video editor?",
+      answer: "Yes! Snipr.me can export edit lists in XML format that can be imported into popular video editing software like Adobe Premiere, DaVinci Resolve, Final Cut Pro, and ScreenFlow."
     },
     {
-      question: "Does SilenceCut work with podcasts too?",
-      answer: "Absolutely. SilenceCut works great with podcasts and any audio recordings. It can save you hours of editing time by automatically removing silent gaps between speakers."
+      question: "Does Snipr.me work with podcasts too?",
+      answer: "Absolutely. Snipr.me works great with podcasts and any audio recordings. It can save you hours of editing time by automatically removing silent gaps between speakers."
     }
   ];
 

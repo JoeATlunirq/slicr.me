@@ -58,7 +58,7 @@ const Pricing = ({ onGetStarted }: PricingProps) => {
       <div className="container mx-auto px-4">
         <h2 className="text-3xl md:text-4xl font-bold text-center mb-6">Try For Free, Buy For Life</h2>
         <p className="text-center text-xl text-gray-700 mb-16 max-w-3xl mx-auto">
-          SilenceCut comes as either a one-time purchase or a subscription.
+          Snipr.me comes as either a one-time purchase or a subscription.
           Try the app for free on your own projects!
         </p>
 
