@@ -4,7 +4,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { Scissors, Download, Settings, ArrowLeft, Upload, RotateCcw, Loader2 } from "lucide-react";
+import { Scissors, Download, Settings, ArrowLeft, Upload, RotateCcw, Loader2, Music } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast, useToast } from "@/hooks/use-toast";
 import Timeline from "./Timeline";
@@ -12,6 +12,7 @@ import { audioBufferToWavBlob } from "@/lib/audioUtils";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import axios from "axios";
 
 // --- Define Ref Handle Type for Timeline ---
 export interface TimelineHandle {
@@ -101,6 +102,15 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
   // --- Get dismiss function from useToast hook ---
   const { dismiss: dismissToast } = useToast();
   // ----------------------------------------------
+
+  // --- State for Music --- 
+  const [addMusicEnabled, setAddMusicEnabled] = useState<boolean>(false);
+  const [availableMusicTracks, setAvailableMusicTracks] = useState<{id: string; name: string; description?: string; mood?: string; lufs?: number; duration?: number}[]>([]);
+  const [selectedMusicTrackId, setSelectedMusicTrackId] = useState<string | null>(null);
+  const [musicVolumeDb, setMusicVolumeDb] = useState<number[]>([-18]);
+  const [isLoadingMusic, setIsLoadingMusic] = useState<boolean>(false);
+  const [autoSelectMusic, setAutoSelectMusic] = useState<boolean>(false);
+  // -----------------------
 
   // --- Recalculate Processed Duration --- 
   // This needs access to *all* deleted regions (manual+auto), which is currently
@@ -519,7 +529,11 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
         exportAsSections: exportAsSections,
         transcribe: transcribeEnabled,
         exportFormat: exportFormat,
-        responseFormat: 'link'
+        // Add music params
+        addMusic: addMusicEnabled,
+        autoSelectMusic: addMusicEnabled ? autoSelectMusic : undefined,
+        musicTrackId: addMusicEnabled && !autoSelectMusic ? (selectedMusicTrackId || undefined) : undefined,
+        musicVolumeDb: addMusicEnabled ? musicVolumeDb[0] : undefined,
     };
 
     const formData = new FormData();
@@ -995,6 +1009,49 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
       "Disabled should be:", (!hasFile || !audioBuffer || isExportProcessing)
   );
 
+  // --- Fetch Available Music Tracks --- 
+  useEffect(() => {
+    const fetchMusic = async () => {
+      setIsLoadingMusic(true);
+      try {
+        console.log("[Music Fetch] Fetching available tracks...");
+        const response = await axios.get('/api/music-tracks');
+        if (response.data?.success && Array.isArray(response.data.tracks)) {
+          console.log("[Music Fetch] Received tracks:", response.data.tracks);
+          setAvailableMusicTracks(response.data.tracks);
+          // Optionally set a default selection
+          // if (response.data.tracks.length > 0 && !selectedMusicTrackId) {
+          //   setSelectedMusicTrackId(response.data.tracks[0].id);
+          // }
+        } else {
+          console.error("[Music Fetch] Invalid response format from /api/music-tracks");
+          setAvailableMusicTracks([]);
+          toast({ title: "Music Error", description: "Could not load available music tracks.", variant: "destructive" });
+        }
+      } catch (error) {
+        console.error("[Music Fetch] Error fetching music tracks:", error);
+        setAvailableMusicTracks([]);
+        toast({ title: "Music Error", description: "Failed to connect to music library.", variant: "destructive" });
+      } finally {
+        setIsLoadingMusic(false);
+      }
+    };
+
+    fetchMusic();
+    // Run only once on component mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // ------------------------------------
+
+  // --- Effect to handle auto-select changes --- 
+  useEffect(() => {
+      // When auto-select is turned on, clear manual selection
+      if (autoSelectMusic) {
+          setSelectedMusicTrackId(null);
+      }
+  }, [autoSelectMusic]);
+  // ---------------------------------------------
+
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
       {/* App Header */}
@@ -1067,14 +1124,18 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
           <Card className="shadow-sm">
             <CardContent className="p-0">
               <Tabs defaultValue="silence" className="w-full" onValueChange={setActiveTab} value={activeTab}>
-                <TabsList className="w-full grid grid-cols-2">
+                <TabsList className="w-full grid grid-cols-3">
                   <TabsTrigger value="silence" className="relative">
                     <Scissors className="h-5 w-5 mr-2" />
-                    Silence Removal
+                    Silence
+                  </TabsTrigger>
+                  <TabsTrigger value="music" className="relative" disabled={!hasFile}>
+                    <Music className="h-5 w-5 mr-2" />
+                    Music
                   </TabsTrigger>
                   <TabsTrigger value="export" className="relative" disabled={!hasFile}>
                     <Download className="h-5 w-5 mr-2" />
-                    Export Settings
+                    Export
                   </TabsTrigger>
                 </TabsList>
 
@@ -1187,7 +1248,91 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                     </div>
                 </TabsContent>
                 
-                {/* Export Settings Tab Content */} 
+                {/* Music Settings Tab Content - NEW */} 
+                <TabsContent value="music" className="p-4">
+                  <div className="space-y-6">
+                    {/* Add Music Checkbox (Master Toggle) */} 
+                    <div className="flex items-center justify-between pb-4 border-b border-gray-200">
+                         <Label htmlFor="add-music-toggle" className="text-sm font-medium">
+                             Add Background Music
+                             <p className="text-xs text-gray-500 font-normal">Mix royalty-free music behind your voice.</p>
+                         </Label>
+                         <Checkbox 
+                             id="add-music-toggle"
+                             checked={addMusicEnabled}
+                             onCheckedChange={(checked) => setAddMusicEnabled(Boolean(checked))}
+                             disabled={!hasFile}
+                         />
+                    </div>
+                    
+                    {/* Conditionally show detailed music options */} 
+                    {addMusicEnabled && (
+                       <div className="space-y-6">
+                          {/* Auto-Select Music */} 
+                          <div className="flex items-center justify-between">
+                              <Label htmlFor="auto-select-music-toggle" className="text-sm font-medium">
+                                  Auto-Select Music
+                                  <p className="text-xs text-gray-500 font-normal">Let the system pick a random track.</p>
+                              </Label>
+                              <Checkbox 
+                                  id="auto-select-music-toggle"
+                                  checked={autoSelectMusic}
+                                  onCheckedChange={(checked) => setAutoSelectMusic(Boolean(checked))}
+                                  disabled={!hasFile}
+                              />
+                          </div>
+
+                          {/* Manual Track Selection (Disabled if Auto is on) */} 
+                          <div>
+                               <Label htmlFor="music-track-select" className={`text-sm font-medium block mb-1 ${autoSelectMusic ? 'text-gray-400' : ''}`}>Manual Track Selection</Label>
+                               <Select 
+                                  value={selectedMusicTrackId ?? ''} 
+                                  onValueChange={(value) => setSelectedMusicTrackId(value || null)} 
+                                  disabled={isLoadingMusic || availableMusicTracks.length === 0 || !hasFile || autoSelectMusic}
+                                  >
+                                   <SelectTrigger id="music-track-select">
+                                       <SelectValue placeholder={isLoadingMusic ? "Loading tracks..." : (autoSelectMusic ? "Auto-selecting..." : "Select track...")} />
+                                   </SelectTrigger>
+                                   <SelectContent>
+                                       {availableMusicTracks.map(track => (
+                                           <SelectItem key={track.id} value={track.id}>
+                                               {track.name} {track.mood ? `(${track.mood})` : ''}
+                                           </SelectItem>
+                                       ))}
+                                       {availableMusicTracks.length === 0 && !isLoadingMusic && (
+                                          <SelectItem value="none" disabled>No tracks found</SelectItem>
+                                       )}
+                                   </SelectContent>
+                               </Select>
+                               {selectedMusicTrackId && !autoSelectMusic &&
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    {availableMusicTracks.find(t => t.id === selectedMusicTrackId)?.description}
+                                  </p>
+                               }
+                           </div>
+                          {/* Music Volume Slider */} 
+                          <div>
+                               <div className="flex justify-between mb-1">
+                                  <Label htmlFor="music-volume" className="text-xs font-medium">Music Ducking Level</Label>
+                                  <span className="text-xs font-mono">{musicVolumeDb[0]} dB</span>
+                               </div>
+                               <Slider 
+                                   id="music-volume"
+                                   value={musicVolumeDb} 
+                                   onValueChange={setMusicVolumeDb}
+                                   min={-30} // Range for music volume relative to VO
+                                   max={-6}
+                                   step={1}
+                                   disabled={!hasFile}
+                               />
+                               <p className="text-xs text-muted-foreground mt-1">Target music volume relative to voice (-18dB default).</p>
+                           </div>
+                       </div>
+                     )}
+                  </div>
+                </TabsContent>
+
+                {/* Export Settings Tab Content - UPDATED */} 
                 <TabsContent value="export" className="p-4">
                    <div className="relative space-y-6">
                      {/* Loading Overlay */} 
@@ -1198,7 +1343,8 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                        </div>
                      )}
 
-                     {/* Actual Content (Target Duration) */} 
+                     {/* Actual Content - Keep relevant export options */} 
+                     {/* Target Duration */} 
                      <div className={`space-y-4 ${isExportProcessing ? 'opacity-50' : ''}`}> 
                          <h3 className="text-sm font-medium">Adjust Speed to Target Duration</h3>
                          <div className="text-sm">
@@ -1239,17 +1385,17 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                          </div>
                      {/* End Target Duration */} 
 
-                     {/* Grouped Export Options */} 
+                     {/* Grouped Export Options (Reduced) */} 
                      <div className={`border-t border-gray-200 pt-4 space-y-6 ${isExportProcessing ? 'opacity-50' : ''}`}> 
                        <h3 className="text-sm font-medium mb-2">Export Options</h3>
                        {/* Transcription Checkbox */} 
                        <div className="pt-0">
-                          <div className="flex items-center justify-between">
-                                <Label htmlFor="transcribe-toggle" className="text-sm font-medium">
-                                    Generate Subtitles (SRT)
-                                    <p className="text-xs text-gray-500 font-normal">Creates word-level timestamps via Whisper.</p>
-                                </Label>
-                                <Checkbox 
+                         <div className="flex items-center justify-between">
+                               <Label htmlFor="transcribe-toggle" className="text-sm font-medium">
+                                   Generate Subtitles (SRT)
+                                   <p className="text-xs text-gray-500 font-normal">Creates word-level timestamps via Whisper.</p>
+                               </Label>
+                               <Checkbox 
                                     id="transcribe-toggle"
                                     checked={transcribeEnabled}
                                     onCheckedChange={(checked) => setTranscribeEnabled(Boolean(checked))}
@@ -1257,50 +1403,118 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                                 />
                            </div>
                        </div>
-                       {/* Export Format Selection */} 
-                       <div className="pt-0">
-                           <Label className="text-sm font-medium block mb-2">Export Format</Label>
-                           <RadioGroup 
-                               defaultValue={exportFormat}
-                               value={exportFormat} 
-                               onValueChange={(value: 'wav' | 'mp3') => setExportFormat(value)}
-                               className="flex space-x-4"
-                               disabled={!hasFile}
-                           >
-                               <div className="flex items-center space-x-2">
-                                   <RadioGroupItem value="wav" id="format-wav" disabled={!hasFile} />
-                                   <Label htmlFor="format-wav" className={`text-sm ${!hasFile ? 'text-gray-400 cursor-not-allowed' : ''}`}>WAV (Lossless)</Label>
+                       {/* --- Add Music Section --- */} 
+                       <div className="pt-0 space-y-3">
+                         <div className="flex items-center justify-between">
+                             <Label htmlFor="add-music-toggle" className="text-sm font-medium">
+                                 Add Background Music
+                                 <p className="text-xs text-gray-500 font-normal">Mix royalty-free music behind your voice.</p>
+                             </Label>
+                             <Checkbox 
+                                 id="add-music-toggle"
+                                 checked={addMusicEnabled}
+                                 onCheckedChange={(checked) => setAddMusicEnabled(Boolean(checked))}
+                                 disabled={!hasFile}
+                             />
+                        </div>
+                        {/* Conditionally show music selection options */} 
+                        {addMusicEnabled && (
+                            <div className="pl-2 space-y-4 pt-2 border-l-2 border-muted">
+                               {/* Music Track Selection */} 
+                               <div>
+                                   <Label htmlFor="music-track-select" className="text-xs font-medium block mb-1">Music Track</Label>
+                                   <Select 
+                                      value={selectedMusicTrackId ?? ''} 
+                                      onValueChange={(value) => setSelectedMusicTrackId(value || null)} 
+                                      disabled={isLoadingMusic || availableMusicTracks.length === 0 || !hasFile}
+                                      >
+                                       <SelectTrigger id="music-track-select">
+                                           <SelectValue placeholder={isLoadingMusic ? "Loading tracks..." : "Select track..."} />
+                                       </SelectTrigger>
+                                       <SelectContent>
+                                           {/* <SelectItem value="default">Default Track</SelectItem> */} {/* Option for default */} 
+                                           {availableMusicTracks.map(track => (
+                                               <SelectItem key={track.id} value={track.id}>
+                                                   {track.name} {track.mood ? `(${track.mood})` : ''}
+                                               </SelectItem>
+                                           ))}
+                                           {availableMusicTracks.length === 0 && !isLoadingMusic && (
+                                              <SelectItem value="none" disabled>No tracks found</SelectItem>
+                                           )}
+                                       </SelectContent>
+                                   </Select>
+                                   {selectedMusicTrackId && 
+                                      <p className="text-xs text-muted-foreground mt-1">
+                                        {availableMusicTracks.find(t => t.id === selectedMusicTrackId)?.description}
+                                      </p>
+                                   }
                                </div>
-                               <div className="flex items-center space-x-2">
-                                   <RadioGroupItem value="mp3" id="format-mp3" disabled={!hasFile} />
-                                   <Label htmlFor="format-mp3" className={`text-sm ${!hasFile ? 'text-gray-400 cursor-not-allowed' : ''}`}>MP3 (Compressed)</Label>
+                               {/* Music Volume Slider */} 
+                               <div>
+                                   <div className="flex justify-between mb-1">
+                                      <Label htmlFor="music-volume" className="text-xs font-medium">Music Volume</Label>
+                                      <span className="text-xs font-mono">{musicVolumeDb[0]} dB</span>
+                                   </div>
+                                   <Slider 
+                                       id="music-volume"
+                                       value={musicVolumeDb} 
+                                       onValueChange={setMusicVolumeDb}
+                                       min={-30} // Range for music volume relative to VO
+                                       max={-6}
+                                       step={1}
+                                       disabled={!hasFile}
+                                   />
+                                   <p className="text-xs text-muted-foreground mt-1">Adjusts background music level (-18dB default).</p>
                                </div>
-                           </RadioGroup>
-                           <p className="text-xs text-gray-500 mt-1">MP3 is smaller (faster upload, good for transcription) but loses some quality.</p>
-                       </div>
-                       {/* Export Button */} 
-                       <div className="pt-0">
-                           <Button 
-                               onClick={handleExportSegments} 
-                               disabled={!hasFile || !audioBuffer || isExportProcessing} 
-                               className="w-full"
-                           >
-                               {isExportProcessing ? (
-                                   <Loader2 className="h-4 w-4 mr-2 animate-spin" /> 
-                               ) : (
-                                   <Download className="h-4 w-4 mr-2" />
-                               )}
-                               {isExportProcessing ? 'Processing Export...' : 
-                               `Export Processed Audio (${exportFormat.toUpperCase()})`
-                               }
-                           </Button>
-                           <p className="text-xs text-gray-500 mt-2 text-center">
-                               {appliedPlaybackRate && appliedPlaybackRate !== 1 
-                                   ? 'Exports with speed/pitch change applied.' 
-                                   : 'Exports at original speed.'
-                               }
-                           </p> 
-                       </div>
+                           </div>
+                        )}
+                        </div>
+                        {/* --- End Add Music Section --- */}
+
+                        {/* Export Format Selection */} 
+                        <div className="pt-0">
+                            <Label className="text-sm font-medium block mb-2">Export Format</Label>
+                            <RadioGroup 
+                                defaultValue={exportFormat}
+                                value={exportFormat} 
+                                onValueChange={(value: 'wav' | 'mp3') => setExportFormat(value)}
+                                className="flex space-x-4"
+                                disabled={!hasFile}
+                            >
+                                <div className="flex items-center space-x-2">
+                                    <RadioGroupItem value="wav" id="format-wav" disabled={!hasFile} />
+                                    <Label htmlFor="format-wav" className={`text-sm ${!hasFile ? 'text-gray-400 cursor-not-allowed' : ''}`}>WAV (Lossless)</Label>
+                                </div>
+                                <div className="flex items-center space-x-2">
+                                    <RadioGroupItem value="mp3" id="format-mp3" disabled={!hasFile} />
+                                    <Label htmlFor="format-mp3" className={`text-sm ${!hasFile ? 'text-gray-400 cursor-not-allowed' : ''}`}>MP3 (Compressed)</Label>
+                                </div>
+                            </RadioGroup>
+                            <p className="text-xs text-gray-500 mt-1">MP3 is smaller (faster upload, good for transcription) but loses some quality.</p>
+                        </div>
+                        {/* Export Button */} 
+                        <div className="pt-0">
+                            <Button 
+                                onClick={handleExportSegments} 
+                                disabled={!hasFile || !audioBuffer || isExportProcessing} 
+                                className="w-full"
+                            >
+                                {isExportProcessing ? (
+                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" /> 
+                                ) : (
+                                    <Download className="h-4 w-4 mr-2" />
+                                )}
+                                {isExportProcessing ? 'Processing Export...' : 
+                                `Export Processed Audio (${exportFormat.toUpperCase()})`
+                                }
+                            </Button>
+                            <p className="text-xs text-gray-500 mt-2 text-center">
+                                {appliedPlaybackRate && appliedPlaybackRate !== 1 
+                                    ? 'Exports with speed/pitch change applied.' 
+                                    : 'Exports at original speed.'
+                                }
+                            </p> 
+                        </div>
                      </div>
                      {/* End Grouped Export Options */} 
                    </div>

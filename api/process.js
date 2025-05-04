@@ -9,7 +9,7 @@ import { pathToFileURL } from 'url';
 import process from 'process';
 import axios from 'axios';
 import ffprobeStatic from 'ffprobe-static';
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import OpenAI from 'openai';
 
 // --- API Key Check --- 
@@ -140,6 +140,20 @@ function generateSrtFromWhisperWords(words) {
 }
 // --- End Helper Function ---
 
+// --- NocoDB Config --- 
+const NOCODB_API_URL = process.env.NOCODB_API_URL;
+const NOCODB_AUTH_TOKEN = process.env.NOCODB_AUTH_TOKEN;
+const MUSIC_TABLE_NAME = 'MushyMedia Songs'; // Keep for reference/logging if needed
+const NOCODB_MUSIC_TABLE_ID = 'mdfijlqr28f4ojj'; // The actual ID for API calls
+// ---------------------
+
+// --- FFmpeg Filter Constants --- 
+const DEFAULT_MUSIC_TARGET_LUFS = -18; // Target loudness for music normalization
+const DEFAULT_MUSIC_DUCKING_DB = -18; // Default volume level relative to VO (Reverted from -26)
+const DEFAULT_MUSIC_FADEOUT_THRESHOLD_S = 180; // 3 minutes
+const DEFAULT_MUSIC_FADEOUT_DURATION_S = 2; // Fade-out duration
+// -----------------------------
+
 // Export default handler function
 export default async function handler(req, res) {
 
@@ -200,17 +214,25 @@ export default async function handler(req, res) {
   let inputPath = null;
   let downloadedTempPath = null;
   let cleanupNeeded = false;
-  let params; // Declare params in the outer scope
-  let intermediateOutputPath = null; // Declare intermediate path here
-  let finalOutputPath = null; // Declare final path here
-  let pathToUpload = null; // Declare upload path here
-  let srtOutputPath = null; // Declare SRT output path
-  let s3SrtKey = null; // Declare S3 key for SRT
-  let mp3OutputPath = null; // Declare MP3 output path if needed
-  let finalExportFormat = 'wav'; // Default export format
-  let finalS3Key = ''; // S3 Key with correct extension
-  let finalContentType = 'audio/wav'; // Default content type
-  let whisperInputPath = null; // Separate path for Whisper input (always MP3)
+  let params;
+  let intermediateOutputPath = null;
+  let finalOutputPath = null; 
+  let whisperInputPath = null; 
+  let tempMusicPath = null;    // Temp path for downloaded original music
+  let trimmedMusicPath = null; // Temp path for music trimmed to VO length
+  let mixedOutputPath = null;  // Temp path for VO + Music mix
+  let normalizedMusicPath = null; // Temp path for normalized music
+  let fadedMusicPath = null;     // Temp path for faded music
+  let adjustedMusicPath = null;  // Temp path for volume-adjusted music
+  let mp3OutputPath = null;
+  let srtOutputPath = null;
+  let s3SrtKey = null;
+  let s3SrtUrl = null; // Declare s3SrtUrl in the outer scope
+  let finalExportFormat = 'wav';
+  let finalS3Key = '';
+  let finalContentType = 'audio/wav';
+  let pathToUpload = null; // Final path (mixed or not, converted or not) before S3 upload
+  let fullTranscriptText = null;
 
   try {
     // --- Get Input: File Upload OR URL --- 
@@ -330,18 +352,33 @@ export default async function handler(req, res) {
     console.log(`[API] Final Output Path: ${finalOutputPath}`);
     console.log(`[API] FFmpeg Path: ${ffmpegInstaller.path}`);
 
-    // --- Input Validation --- 
+    // --- Parameter Validation (including advanced music params) --- 
     const thresholdDb = parseFloat(params.thresholdDb ?? -40);
     const minDuration = parseFloat(params.minDuration ?? 0.2);
     const leftPadding = parseFloat(params.leftPadding ?? 0.0332);
     const rightPadding = parseFloat(params.rightPadding ?? 0.0332);
     const targetDurationParam = params.targetDuration ? parseFloat(params.targetDuration) : null;
-    const transcribe = params.transcribe === true || params.transcribe === 'true'; // Check for boolean or string 'true'
-    // Get requested export format, default to wav
-    finalExportFormat = (params.exportFormat === 'mp3') ? 'mp3' : 'wav'; 
-    console.log(`[API] Transcription requested: ${transcribe}`);
-    console.log(`[API] Export format requested: ${finalExportFormat}`);
-    // ------------------------
+    const transcribe = params.transcribe === true || params.transcribe === 'true';
+    finalExportFormat = (params.exportFormat === 'mp3') ? 'mp3' : 'wav';
+    // Music Params
+    const addMusic = params.addMusic === true || params.addMusic === 'true';
+    const autoSelectMusic = params.autoSelectMusic === true || params.autoSelectMusic === 'true';
+    let musicTrackId = addMusic ? (params.musicTrackId || null) : null; // Manual selection takes priority initially
+    const musicVolumeDb = addMusic ? parseFloat(params.musicVolumeDb ?? DEFAULT_MUSIC_DUCKING_DB) : DEFAULT_MUSIC_DUCKING_DB;
+    const musicTargetLufs = addMusic ? parseFloat(params.musicTargetLufs ?? DEFAULT_MUSIC_TARGET_LUFS) : DEFAULT_MUSIC_TARGET_LUFS;
+    const musicFadeoutThreshold = addMusic ? parseFloat(params.musicFadeoutThreshold ?? DEFAULT_MUSIC_FADEOUT_THRESHOLD_S) : DEFAULT_MUSIC_FADEOUT_THRESHOLD_S;
+
+    // New Music Parameters:
+    // musicStartTime (Optional<number>): Start time (in seconds) within the music track to begin playback. Defaults to 0.
+    const musicStartTime = addMusic ? parseFloat(params.musicStartTime ?? 0) : 0;
+    // musicEndTime (Optional<number>): End time (in seconds) within the music track to stop playback. Defaults to the music track's full duration if not specified.
+    const musicEndTime = addMusic ? (params.musicEndTime ? parseFloat(params.musicEndTime) : null) : null;
+    // musicVolumeLevel (Optional<number>): Volume level multiplier for the music track (0.0 to 1.0). Defaults to 0.1 (10% volume).
+    const musicVolumeLevel = addMusic ? parseFloat(params.musicVolumeLevel ?? 0.1) : 0.1;
+
+    console.log(`[API Params] Transcription: ${transcribe}, Export Format: ${finalExportFormat}, Add Music: ${addMusic}, AutoSelect: ${autoSelectMusic}, Track ID: ${musicTrackId}, Music Volume: ${musicVolumeDb}dB, Music Target LUFS: ${musicTargetLufs}, Fade Threshold: ${musicFadeoutThreshold}s`);
+    console.log(`[API Params Music Timing] StartTime: ${musicStartTime}s, EndTime: ${musicEndTime !== null ? musicEndTime + 's' : 'Full Duration'}, VolumeLevel: ${musicVolumeLevel}`);
+    // ---------------------------------------------------------
 
     // --- FFmpeg Pass 1: Silence Removal --- 
     console.log("[API] Starting Pass 1: Silence Removal...");
@@ -465,30 +502,26 @@ export default async function handler(req, res) {
     }
     // --- End FFmpeg Pass 2 ---
 
-    // --- Determine Final Path to Use (WAV path before potential MP3 conversion) --- 
+    // --- Determine Base WAV Path (result of Pass 1 or Pass 2) --- 
     let wavPathToProcess = null;
     if (fs.existsSync(finalOutputPath)) {
          wavPathToProcess = finalOutputPath;
-         console.log(`[API] Base WAV path selected (from Pass 2): ${finalOutputPath}`);
+         console.log(`[API Base WAV] Path selected (from Pass 2): ${wavPathToProcess}`);
     } else if (fs.existsSync(intermediateOutputPath)) {
-         console.warn("[API] finalOutputPath doesn't exist, using intermediateOutputPath as base WAV."); 
-         wavPathToProcess = intermediateOutputPath; // Fallback if Pass 2 didn't run/create file
+         console.log("[API Base WAV] Path selected (from Pass 1):", intermediateOutputPath);
+         wavPathToProcess = intermediateOutputPath;
     } else {
-         console.warn("[API] Neither final nor intermediate WAV exist, falling back to original input path.");
-         wavPathToProcess = finalInputPath; // Note: This might not be WAV!
-         // Add check if input needs conversion for consistency? Or handle error?
-         // For now, assume if we reach here, input was likely compatible or error occurred
+         console.warn("[API Base WAV] Neither final nor intermediate exist. Using original input, processing might fail if not audio.");
+         wavPathToProcess = finalInputPath; 
     }
     
     if (!wavPathToProcess || !fs.existsSync(wavPathToProcess)) {
-        console.error(`[API] Critical Error Before Conversion/Transcription: Base WAV path not found or invalid: ${wavPathToProcess}`);
+        console.error(`[API Base WAV] Critical Error: Base WAV path not found or invalid: ${wavPathToProcess}`);
         throw new Error('Base audio file for processing not found.');
     }
     // --- End Base WAV Path Determination ---
 
-    // --- Prepare Input for Whisper (Always MP3) --- 
-    // Create a temporary MP3 for Whisper regardless of final export format
-    // Use a different temp filename to avoid conflicts if user also wants MP3 export
+    // --- Prepare Input for Whisper (MP3 from Base WAV) --- 
     const whisperTempMp3Path = path.join(os.tmpdir(), `${baseOutputFilename}_whisper_temp.mp3`);
     console.log(`[API Whisper Prep] Converting ${wavPathToProcess} to MP3 for Whisper: ${whisperTempMp3Path}...`);
     try {
@@ -511,115 +544,417 @@ export default async function handler(req, res) {
          // Conversion successful, set the path for Whisper input
          whisperInputPath = whisperTempMp3Path;
     } catch (whisperMp3Error) {
-         console.error("[API Whisper Prep MP3] Failed to convert to MP3 for Whisper. Transcription may fail or be skipped.", whisperMp3Error);
-         // Keep whisperInputPath as null
+         console.error("[API Whisper Prep MP3] Failed to convert. Transcription may fail.", whisperMp3Error);
     }
     // --- End Whisper Input Prep ---
 
-    // --- Final Conversion to Export Format (Conditional) --- 
-    pathToUpload = wavPathToProcess; // Default to the determined WAV path for EXPORT
-    if (finalExportFormat === 'mp3') {
-        console.log(`[API Convert] Converting ${wavPathToProcess} to MP3...`);
-        try {
-            await new Promise((resolve, reject) => {
-                ffmpeg(wavPathToProcess)
-                    .audioCodec('libmp3lame')
-                    .audioBitrate('192k') // Example bitrate
-                    .toFormat('mp3')
-                    .on('error', (err, stdout, stderr) => {
-                         console.error('[API Convert MP3] FFmpeg Error:', err.message);
-                         console.error('[API Convert MP3] FFmpeg stderr:', stderr);
-                         reject(new Error(`Failed to convert audio to MP3: ${err.message}`));
-                    })
-                    .on('end', () => {
-                         console.log(`[API Convert MP3] Successfully converted to ${mp3OutputPath}`);
-                         resolve();
-                     })
-                     .save(mp3OutputPath);
-             });
-             // Conversion successful, update path for upload and transcription
-             pathToUpload = mp3OutputPath;
-             console.log(`[API Convert] Using MP3 path for subsequent steps: ${pathToUpload}`);
-        } catch (mp3Error) {
-             console.error("[API Convert MP3] Failed to convert to MP3. Uploading WAV instead.", mp3Error);
-             // Keep pathToUpload as the original WAV path
-             // Reset final key and content type back to WAV as fallback
-             finalS3Key = `${baseOutputFilename}_final.wav`;
-             finalContentType = 'audio/wav';
-             console.warn(`[API Convert MP3 Fallback] Reverted S3 Key to: ${finalS3Key}, ContentType: ${finalContentType}`);
-        }
-    }
-    // --- End Final Conversion ---
+    // --- Determine if Transcription is needed (for SRT or LLM) ---
+    // Run if user wants SRT OR if auto music needs it (and OpenAI is configured)
+    const needsTranscription = openai && (
+        transcribe || 
+        (addMusic && autoSelectMusic)
+    );
+    console.log(`[API Logic] Needs Transcription (for SRT or LLM)? ${needsTranscription}`);
+    // ----------------------------------------------------------
 
-    // --- Transcription (Optional) --- 
-    // Uses the dedicated `whisperInputPath` (MP3)
-    let s3SrtUrl = null;
-    if (transcribe) {
-        if (!openai) {
-            console.warn("[API Transcribe] OpenAI client not initialized. Skipping.");
-        // Check the dedicated whisperInputPath
-        } else if (!whisperInputPath || !fs.existsSync(whisperInputPath)) { 
-             console.error(`[API Transcribe] MP3 file for Whisper transcription not found or conversion failed: ${whisperInputPath}`);
+    // --- Run Whisper Transcription (Conditional) ---
+    if (needsTranscription) {
+        if (!whisperInputPath || !fs.existsSync(whisperInputPath)) {
+            console.error(`[API Transcribe Core] MP3 file for Whisper not found or conversion failed: ${whisperInputPath}. Cannot run transcription.`);
         } else {
-            console.log(`[API Transcribe] Starting transcription using MP3: ${whisperInputPath}...`);
+            console.log(`[API Transcribe Core] Starting transcription using MP3: ${whisperInputPath}...`);
             try {
-                const transcription = await openai.audio.transcriptions.create({
-                    // Use whisperInputPath here
-                    file: fs.createReadStream(whisperInputPath), 
+                const transcriptionResult = await openai.audio.transcriptions.create({
+                    file: fs.createReadStream(whisperInputPath),
                     model: "whisper-1",
                     response_format: "verbose_json",
                     timestamp_granularities: ["word"]
                 });
-                
-                // --- Log Raw Word Timestamps --- 
-                if (transcription.words && transcription.words.length > 0) {
-                    console.log("[API Transcribe Raw Words]:", JSON.stringify(transcription.words.slice(0, 10), null, 2)); // Log first 10 words
-                }
-                // -------------------------------
 
-                console.log("[API Transcribe] Transcription successful. Generating SRT...");
-                const srtContent = generateSrtFromWhisperWords(transcription.words);
-
-                if (srtContent) {
-                    fs.writeFileSync(srtOutputPath, srtContent);
-                    console.log(`[API Transcribe] SRT file generated: ${srtOutputPath}`);
-
-                    // Upload SRT to S3
-                    console.log(`[API Transcribe] Uploading SRT to S3 bucket: ${S3_BUCKET_NAME}, Key: ${s3SrtKey}`);
-                    const srtUploadCommand = new PutObjectCommand({
-                        Bucket: S3_BUCKET_NAME,
-                        Key: s3SrtKey,
-                        Body: fs.createReadStream(srtOutputPath),
-                        ContentType: 'text/plain' // Or application/x-subrip
-                    });
-                    await s3Client.send(srtUploadCommand);
-                    // Construct S3 URL for SRT (adjust region/bucket format if needed)
-                    s3SrtUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${s3SrtKey}`;
-                    console.log(`[API Transcribe] SRT uploaded successfully: ${s3SrtUrl}`);
-
+                // Extract Full Transcript Text (always needed if transcription runs)
+                fullTranscriptText = transcriptionResult.text || null;
+                if (fullTranscriptText) {
+                    console.log("[API Transcribe Core] Extracted full transcript text.");
+                    console.log(`[API Transcribe Core] Transcript Text (start): "${fullTranscriptText.substring(0, 100)}..."`);
                 } else {
-                    console.warn("[API Transcribe] Generated SRT content was empty (no words found or processed?). No SRT file saved or uploaded.");
+                    console.warn("[API Transcribe Core] Could not extract full text from transcription result.");
                 }
+
+                // --- Handle SRT Generation/Upload ONLY if requested by user --- 
+                if (transcribe) {
+                    console.log("[API Transcribe SRT] User requested SRT file generation.");
+                    if (transcriptionResult.words && transcriptionResult.words.length > 0) {
+                         console.log("[API Transcribe SRT Raw Words]:", JSON.stringify(transcriptionResult.words.slice(0, 10), null, 2));
+                        const srtContent = generateSrtFromWhisperWords(transcriptionResult.words);
+                        if (srtContent) {
+                            fs.writeFileSync(srtOutputPath, srtContent);
+                            console.log(`[API Transcribe SRT] SRT file generated: ${srtOutputPath}`);
+                            // Upload SRT to S3
+                            console.log(`[API Transcribe SRT] Uploading SRT to S3 bucket: ${S3_BUCKET_NAME}, Key: ${s3SrtKey}`);
+                            const srtUploadCommand = new PutObjectCommand({
+                                Bucket: S3_BUCKET_NAME,
+                                Key: s3SrtKey,
+                                Body: fs.createReadStream(srtOutputPath),
+                                ContentType: 'text/plain' // Or application/x-subrip
+                            });
+                            await s3Client.send(srtUploadCommand);
+                            s3SrtUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${s3SrtKey}`;
+                            console.log(`[API Transcribe SRT] SRT uploaded successfully: ${s3SrtUrl}`);
+                        } else {
+                            console.warn("[API Transcribe SRT] Generated SRT content was empty. No SRT file saved or uploaded.");
+                        }
+                    } else {
+                        console.warn("[API Transcribe SRT] Transcription result missing word-level timestamps needed for SRT.");
+                    }
+                } else {
+                    console.log("[API Transcribe SRT] User did not request SRT file generation. Skipping SRT processing.");
+                }
+                 // ------------------------------------------------------------
 
             } catch (transcriptionError) {
-                console.error("[API Transcribe] Error during transcription or SRT processing:", transcriptionError);
-                // Do not fail the request, just skip SRT generation
+                console.error("[API Transcribe Core] Error during transcription API call:", transcriptionError);
+                // Do not fail the request, just mark transcript as unavailable
+                fullTranscriptText = null; 
             }
         }
+    } else {
+        console.log("[API Transcribe Core] Skipping transcription (OpenAI not configured, or not needed for SRT/LLM).");
     }
-    // --- End Transcription ---
+    // --- End Whisper Transcription ---
 
-    // --- Output Handling --- 
-    // Uploads the file at `pathToUpload` (WAV or MP3)
-    console.log(`[API Upload] Uploading final audio from: ${pathToUpload}`);
+    // --- Base Path for Export (Starts as the processed VO) --- 
+    let basePathForExport = wavPathToProcess;
+    // ----------------------------------------------------------
+
+    // --- Determine Music Track ID (Manual vs Auto) --- 
+    let finalMusicTrackId = null;
+    let musicFileUrl = null;
+    let musicOriginalDuration = null;
+    let musicOriginalLufs = null;
     
-    // --- Re-determine S3 Key and Content Type based on final path --- 
-    const finalExtension = path.extname(pathToUpload).substring(1); // e.g., 'wav' or 'mp3'
+    if (addMusic) {
+        if (musicTrackId) { // Manual selection takes precedence
+            finalMusicTrackId = musicTrackId;
+            console.log(`[API Music Select] Using manually selected track ID: ${finalMusicTrackId}`);
+        } else if (autoSelectMusic) {
+            console.log("[API Music Select] Auto-select requested. Fetching track list...");
+            let tracks = [];
+            try {
+                // Fetch full track list from NocoDB via our other API
+                const listApiUrl = `http://localhost:${process.env.PORT || 3001}/api/music-tracks`;
+                console.log(`[API Music Select] Calling list API: ${listApiUrl}`);
+                const trackListResponse = await axios.get(listApiUrl);
+                if (trackListResponse.data?.success && trackListResponse.data.tracks?.length > 0) {
+                    tracks = trackListResponse.data.tracks;
+                    console.log(`[API Music Select] Fetched ${tracks.length} tracks for selection.`);
+                } else {
+                    console.warn("[API Music Select] Could not fetch or parse track list for auto-selection.");
+                }
+            } catch (listError) {
+                console.error("[API Music Select] Error fetching track list for auto-selection:", listError);
+            }
+
+            // --- LLM Selection Logic --- 
+            // Attempt LLM if auto-select is on, OpenAI is ready, and we have a transcript
+            if (openai && fullTranscriptText && tracks.length > 0) { 
+                console.log("[API Music Select] Attempting LLM-based selection (using script, expecting title)...");
+                try {
+                    // Format the track list for the new prompt style
+                    const trackOptionsString = tracks.map((t, index) => 
+                        `${index + 1}. "${t.name}" — ${t.description || 'N/A'} [Mood: ${t.mood || 'N/A'}]`
+                    ).join('\n');
+                    
+                    // Construct the new prompt
+                    const combinedPrompt = `You're assisting an automated video production system by selecting the most suitable background music track based on the emotional tone and content of a provided story script.
+
+Story Script:
+---
+${fullTranscriptText}
+---
+
+Available Music Options:
+${trackOptionsString}
+
+Based solely on the script's emotional tone and narrative context, select the most fitting music track from the list above.
+
+Respond clearly with only the exact song title (no additional commentary or explanation).`;
+
+                    console.log("[API Music Select LLM] Sending request to OpenAI with new prompt...");
+                    // Use gpt-3.5-turbo as requested (closest to '03 mini')
+                    const llmResponse = await openai.chat.completions.create({
+                        model: "gpt-3.5-turbo",
+                        messages: [
+                            // Use a single user message with the combined prompt
+                            { role: "user", content: combinedPrompt }, 
+                        ],
+                        temperature: 0.3, // Lower temperature for more deterministic title selection
+                        max_tokens: 50, // Allow slightly more tokens for potential longer titles
+                    });
+
+                    const potentialTitle = llmResponse.choices[0]?.message?.content?.trim().replace(/^"|"$/g, ''); // Trim and remove surrounding quotes if any
+                    console.log(`[API Music Select LLM] Received potential title: '${potentialTitle}'`);
+
+                    // Validate if the response is a valid TITLE from our list
+                    const matchedTrack = tracks.find(t => t.name === potentialTitle);
+                    
+                    if (matchedTrack) {
+                        finalMusicTrackId = matchedTrack.id; // Get the ID from the matched track
+                        console.log(`[API Music Select LLM] Successfully matched title to track ID: ${finalMusicTrackId}`);
+                    } else {
+                        console.warn(`[API Music Select LLM] Response title '${potentialTitle}' does not match any available track titles. Skipping music addition.`);
+                        // Skip music if LLM fails or returns non-matching title
+                        finalMusicTrackId = null; 
+                    }
+                } catch (llmError) {
+                    console.error("[API Music Select LLM] Error during OpenAI call:", llmError);
+                    // Skip music on error
+                    finalMusicTrackId = null;
+                }
+            } else {
+                // --- Skip Music if LLM prerequisites not met --- 
+                if (!openai) {
+                    console.warn("[API Music Select] LLM selection skipped (OpenAI unavailable). Skipping music addition.");
+                } else if (!fullTranscriptText) {
+                    console.warn("[API Music Select] LLM selection skipped (No transcript text available). Skipping music addition.");
+                } else if (tracks.length === 0) {
+                    console.warn("[API Music Select] LLM selection skipped (No tracks available). Skipping music addition.");
+                }
+                finalMusicTrackId = null; // Ensure music is skipped
+            }
+            // --- End LLM / Skip Logic --- 
+            
+        } else {
+             console.log("[API Music Select] Add Music enabled, but no Track ID provided and AutoSelect is off. Skipping music.");
+        }
+    } else {
+        console.log("[API Music] No music track ID determined. Skipping music addition.");
+    }
+    // --- End Determine Music Track ID ---
+
+    // --- Add Background Music (Conditional on having a finalMusicTrackId) --- 
+    if (finalMusicTrackId) {
+      console.log(`[API Music] Adding music track ID: ${finalMusicTrackId}`);
+      if (!NOCODB_API_URL || !NOCODB_AUTH_TOKEN) {
+        console.error("[API Music] Cannot add music: NocoDB environment variables missing.");
+        throw new Error("Server configuration error for music database.");
+      }
+
+      try {
+        // 1. Fetch music track details from NocoDB
+        // const recordUrl = `${NOCODB_API_URL}/tables/${encodeURIComponent(MUSIC_TABLE_NAME)}/records?where=(Song ID,eq,${encodeURIComponent(finalMusicTrackId)})`; // Use where filter
+        // Construct URL using Table ID and where filter
+        const recordUrl = `${NOCODB_API_URL}/tables/${NOCODB_MUSIC_TABLE_ID}/records?where=(Song ID,eq,${encodeURIComponent(finalMusicTrackId)})`;
+        console.log(`[API Music] Fetching NocoDB record: ${recordUrl}`);
+        const headers = { 'xc-token': NOCODB_AUTH_TOKEN };
+        const nocoResponse = await axios.get(recordUrl, { headers });
+        
+        // NocoDB returns results in a list even with filter
+        const record = nocoResponse.data?.list?.[0]; 
+        if (!record) throw new Error(`Track ID ${finalMusicTrackId} not found in NocoDB.`);
+
+        musicFileUrl = record['Url (S3)'];
+        musicOriginalLufs = parseFloat(record['Lufs']); // Get LUFS
+        // Assuming Duration is stored as seconds or easily parseable string
+        musicOriginalDuration = parseFloat(record['Duration']); 
+
+        if (!musicFileUrl) throw new Error(`'Url (S3)' field missing for track ${finalMusicTrackId}.`);
+        if (isNaN(musicOriginalLufs)) console.warn(`[API Music] LUFS value missing or invalid for track ${finalMusicTrackId}. Normalization might be skipped or fail.`);
+        if (isNaN(musicOriginalDuration)) throw new Error(`'Duration' field missing or invalid for track ${finalMusicTrackId}.`);
+
+        console.log(`[API Music] Details: URL=${musicFileUrl}, LUFS=${musicOriginalLufs}, Duration=${musicOriginalDuration}s`);
+
+        // 2. Download music file
+        const musicFileExtension = path.extname(new URL(musicFileUrl).pathname) || '.mp3';
+        tempMusicPath = path.join(os.tmpdir(), `${baseOutputFilename}_music_orig${musicFileExtension}`);
+        normalizedMusicPath = path.join(os.tmpdir(), `${baseOutputFilename}_music_norm.wav`); // Output normalized as WAV
+        fadedMusicPath = path.join(os.tmpdir(), `${baseOutputFilename}_music_fade.wav`);      // Output faded as WAV
+        await downloadFile(musicFileUrl, tempMusicPath);
+        console.log(`[API Music] Download complete.`);
+
+        // 3. Normalize Music Loudness (if LUFS data available)
+        let musicPathForProcessing = tempMusicPath;
+        if (!isNaN(musicOriginalLufs)) {
+            console.log(`[API Music] Normalizing music to ${musicTargetLufs} LUFS -> ${normalizedMusicPath}`);
+            await new Promise((resolve, reject) => {
+                 ffmpeg(tempMusicPath)
+                    .audioFilter(`loudnorm=I=${musicTargetLufs}:LRA=7:tp=-2`) // Example params, adjust LRA/tp if needed
+                    .outputOptions('-ar 44100') // Ensure consistent sample rate
+                    .toFormat('wav') // Normalize to WAV
+                    .on('error', (err) => reject(new Error(`Music normalization failed: ${err.message}`)))
+                    .on('end', resolve)
+                    .save(normalizedMusicPath);
+            });
+            musicPathForProcessing = normalizedMusicPath;
+            console.log(`[API Music] Normalization complete.`);
+        } else {
+             console.warn(`[API Music] Skipping loudness normalization due to missing LUFS data.`);
+        }
+
+        // --- Get VO Duration --- 
+        console.log(`[API Music] Probing VO duration from: ${wavPathToProcess}`);
+        const voMetadata = await new Promise((resolve, reject) => {
+            ffmpeg.ffprobe(wavPathToProcess, (err, metadata) => {
+                if (err) reject(err);
+                else resolve(metadata);
+            });
+        });
+        const voDuration = voMetadata?.format?.duration;
+        if (typeof voDuration !== 'number' || voDuration <= 0) throw new Error('Could not determine VO duration.');
+        console.log(`[API Music] VO Duration: ${voDuration} seconds`);
+        // --- End Get VO Duration ---
+
+        // 4. Apply Fade-Out Conditionally (if music shorter than VO)
+        let musicPathBeforeTrim = musicPathForProcessing; // Start with normalized (or original)
+        const FADE_DURATION_S = 3; // Duration of the fade in seconds
+        if (musicOriginalDuration < voDuration) {
+            console.log(`[API Music Fade] Music (${musicOriginalDuration}s) is shorter than VO (${voDuration}s). Applying fade-out.`);
+            const fadeStartTime = Math.max(0, musicOriginalDuration - FADE_DURATION_S);
+            console.log(`[API Music Fade] Fading out last ${FADE_DURATION_S}s starting at ${fadeStartTime.toFixed(2)}s -> ${fadedMusicPath}`);
+            await new Promise((resolve, reject) => {
+                ffmpeg(musicPathForProcessing) // Input is normalized (or original)
+                    .audioFilter(`afade=t=out:st=${fadeStartTime.toFixed(4)}:d=${FADE_DURATION_S}`)
+                    .outputOptions('-c:a pcm_s16le') // Ensure WAV codec
+                    .toFormat('wav')
+                    .on('error', (err) => reject(new Error(`Music conditional fade-out failed: ${err.message}`)))
+                    .on('end', resolve)
+                    .save(fadedMusicPath);
+            });
+            musicPathBeforeTrim = fadedMusicPath; // Use the faded path for trimming
+            console.log(`[API Music Fade] Conditional fade-out complete.`);
+        } else {
+            console.log(`[API Music Fade] Music (${musicOriginalDuration}s) is not shorter than VO (${voDuration}s). Skipping fade-out.`);
+        }
+
+        // 5. Trim Music Segment based on start/end times and match VO duration
+        trimmedMusicPath = path.join(os.tmpdir(), `${baseOutputFilename}_music_trim.wav`); // Output trimmed as WAV
+        console.log(`[API Music Trim] Processing music segment (Input: ${musicPathBeforeTrim}, Start: ${musicStartTime}s, End: ${musicEndTime ? musicEndTime + 's' : 'VO Duration'}) -> ${trimmedMusicPath}...`);
+        
+        await new Promise((resolve, reject) => {
+            let command = ffmpeg(musicPathBeforeTrim); // Use the potentially faded path
+            
+            // Apply start time
+            command = command.setStartTime(musicStartTime);
+            console.log(`[API Music Trim] Set start time: ${musicStartTime}s`);
+
+            let segmentDuration = null;
+            // Calculate duration if valid end time is provided
+            if (musicEndTime !== null && musicEndTime > musicStartTime) {
+                segmentDuration = musicEndTime - musicStartTime;
+                console.log(`[API Music Trim] Using specified end time. Segment duration: ${segmentDuration.toFixed(4)}s`);
+                command = command.setDuration(segmentDuration);
+            }
+
+            // If no valid segment duration from end time, trim to VO duration
+            // OR if segment duration is LONGER than voDuration, also trim to voDuration
+            if (segmentDuration === null || segmentDuration > voDuration) {
+                 if (segmentDuration !== null) {
+                    console.log(`[API Music Trim] Specified segment duration (${segmentDuration.toFixed(4)}s) > VO duration (${voDuration.toFixed(4)}s). Trimming final output to VO duration.`);
+                 } else {
+                    console.log(`[API Music Trim] No valid end time specified. Trimming final output to VO duration: ${voDuration.toFixed(4)}s`);
+                 }
+                 // Apply VO duration *if* trimming is needed
+                 command = command.setDuration(voDuration); 
+            }
+            
+            command
+                // Re-encode to ensure format consistency after trimming/segmenting
+                .outputOptions('-c:a pcm_s16le')
+                .toFormat('wav')
+                .on('error', reject)
+                .on('end', resolve)
+                .save(trimmedMusicPath); // Save the final trimmed music
+        });
+        console.log(`[API Music Trim] Music trimmed.`);
+
+        // 6. Apply Final Volume Adjustment to Trimmed Music
+        adjustedMusicPath = path.join(os.tmpdir(), `${baseOutputFilename}_music_adj.wav`);
+        console.log(`[API Music Volume] Applying final volume adjustment (Level: ${musicVolumeLevel}) -> ${adjustedMusicPath}...`);
+        await new Promise((resolve, reject) => {
+            ffmpeg(trimmedMusicPath) // Input is the trimmed music
+                .audioFilter(`volume=volume=${musicVolumeLevel}`)
+                .outputOptions('-c:a pcm_s16le')
+                .toFormat('wav')
+                .on('error', (err) => reject(new Error(`Music volume adjustment failed: ${err.message}`)))
+                .on('end', resolve)
+                .save(adjustedMusicPath);
+        });
+        console.log(`[API Music Volume] Music volume adjusted.`);
+        
+        // Use the volume-adjusted path for mixing
+        const musicPathForMixing = adjustedMusicPath;
+
+        // 7. Mix VO and Volume-Adjusted Music (Simple Mix)
+        mixedOutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_mixed.wav`);
+        console.log(`[API Music Mix] Mixing VO (${wavPathToProcess}) and Adjusted Music (${musicPathForMixing}) -> ${mixedOutputPath}...`);
+        await new Promise((resolve, reject) => {
+            ffmpeg()
+              .input(wavPathToProcess)       // Input 0: Voice Over
+              .input(musicPathForMixing)    // Input 1: Volume-adjusted music
+              .complexFilter(`[0:a][1:a]amix=inputs=2:duration=first[out]`)
+              .map('[out]')
+              .audioCodec('pcm_s16le') // Standard WAV codec
+              .toFormat('wav')
+              .on('error', (err, stdout, stderr) => {
+                    console.error('[API Music Mix] FFmpeg Error:', err.message);
+                    console.error('[API Music Mix] FFmpeg stderr:', stderr);
+                    reject(new Error(`Failed to mix audio: ${err.message}`)); 
+                })
+              .on('end', () => {
+                   console.log(`[API Music Mix] Successfully mixed audio.`);
+                   resolve();
+               })
+              .save(mixedOutputPath);
+        });
+        // Mixing successful, update the base path for export
+        basePathForExport = mixedOutputPath;
+        console.log(`[API Music] Using mixed audio path for export: ${basePathForExport}`);
+
+      } catch (musicError) {
+         console.error("[API Music] Failed to add background music:", musicError);
+         // Don't fail the whole request, just skip adding music
+         // toast({ title: "Music Error", description: `Failed to add background music: ${musicError.message}. Proceeding without music.`, variant: "warning" }); // Send warning toast? No, backend can't toast.
+         // Keep basePathForExport as the original processed VO
+         console.warn("[API Music] Proceeding without background music due to error.");
+      }
+    } else {
+        console.log("[API Music] No music track ID determined. Skipping music addition.");
+    }
+    // --- End Add Background Music ---
+
+    // --- Final Conversion to Export Format (Conditional) --- 
+    // Operates on basePathForExport (either original processed VO or the mixed audio)
+    pathToUpload = basePathForExport; // Default to the base path
+    if (finalExportFormat === 'mp3') {
+        console.log(`[API Convert Export] Converting ${basePathForExport} to MP3 export format...`);
+        try {
+            await new Promise((resolve, reject) => {
+                ffmpeg(basePathForExport) // Input is the base path for export
+                    .audioCodec('libmp3lame')
+                    .audioBitrate('192k') 
+                    .toFormat('mp3')
+                    .on('error', (err, stdout, stderr) => { /* ... error handling ... */ reject(err); })
+                    .on('end', () => { /* ... */ resolve(); })
+                    .save(mp3OutputPath); // Save to final MP3 export path
+             });
+             pathToUpload = mp3OutputPath; // Update path for upload
+             console.log(`[API Convert Export] Using MP3 export path for S3 upload: ${pathToUpload}`);
+        } catch (mp3ExportError) {
+             console.error("[API Convert Export] Failed to convert to MP3. Uploading original format instead.", mp3ExportError);
+             // Keep pathToUpload as basePathForExport
+        }
+    }
+    // Determine final S3 key/type *after* potential conversion
+    const finalExtension = path.extname(pathToUpload)?.substring(1) || finalExportFormat; // Get extension or use requested format
     finalS3Key = `${baseOutputFilename}_final.${finalExtension}`;
     finalContentType = finalExtension === 'mp3' ? 'audio/mpeg' : 'audio/wav';
-    console.log(`[API Upload] Determined final S3 Key: ${finalS3Key}, ContentType: ${finalContentType}`);
-    // --------------------------------------------------------------
+    console.log(`[API Upload Prep] Final S3 Key: ${finalS3Key}, ContentType: ${finalContentType}`);
+    // --- End Final Conversion ---
 
+    // --- Output Handling (S3 Upload) --- 
+    // Uploads the file at `pathToUpload` (WAV/MP3, potentially mixed)
+    // Uses finalS3Key and finalContentType
+    console.log(`[API Upload] Uploading final audio from: ${pathToUpload}`);
+    
     // Check if S3 bucket is configured
     if (!S3_BUCKET_NAME || !s3Client) {
         console.error("[API] S3 Bucket Name or S3 Client is not configured. Cannot upload.");
@@ -641,10 +976,10 @@ export default async function handler(req, res) {
     // --- End Output Handling ---
 
     // --- Send Response ---
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
     const responsePayload = {
-        success: true,
+            success: true,
         audioUrl: s3AudioUrl
     };
     if (s3SrtUrl) {
@@ -667,26 +1002,28 @@ export default async function handler(req, res) {
   } finally {
       // --- Cleanup --- 
       console.log("[API] Starting cleanup...");
-      // Add whisperInputPath (whisperTempMp3Path) to files to delete
       const filesToDelete = [
-          downloadedTempPath, 
-          intermediateOutputPath, 
-          finalOutputPath, 
-          srtOutputPath, 
-          mp3OutputPath, // Final export MP3 (if created)
-          whisperInputPath // Temp MP3 for Whisper
+          downloadedTempPath,    // Original download (if URL)
+          intermediateOutputPath, // Silence removal output
+          finalOutputPath,       // Speed adjustment output
+          whisperInputPath,      // Temp MP3 for Whisper
+          tempMusicPath,         // Downloaded original music
+          trimmedMusicPath,      // Trimmed music
+          mixedOutputPath,       // Mixed VO + Music
+          mp3OutputPath,         // Final export MP3 (if created)
+          srtOutputPath          // Generated SRT
         ];
       filesToDelete.forEach(filePath => {
-          if (filePath && fs.existsSync(filePath)) {
-              try {
-                  fs.unlinkSync(filePath);
-                  console.log(`[API Cleanup] Deleted: ${filePath}`);
-              } catch (unlinkErr) {
-                  console.error(`[API Cleanup] Error deleting file ${filePath}:`, unlinkErr);
-              }
-          }
+        if (filePath && fs.existsSync(filePath)) {
+            try {
+                fs.unlinkSync(filePath);
+                console.log(`[API Cleanup] Deleted: ${filePath}`);
+            } catch (unlinkErr) {
+                console.error(`[API Cleanup] Error deleting file ${filePath}:`, unlinkErr);
+            }
+        }
       });
-      console.log("[API] Cleanup finished.");
+      console.log("[API Cleanup] Cleanup finished.");
       // --- End Cleanup ---
   }
 }
