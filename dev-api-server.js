@@ -9,7 +9,7 @@ dotenv.config();
 // Import the handler function from the actual API file
 // Use dynamic import() because api/index.js is an ES module
 async function startServer() {
-    const apiPath = path.resolve('api', 'index.js');
+    const apiPath = path.resolve('api', 'process.js');
     const apiUrl = pathToFileURL(apiPath).href;
     const { default: handler } = await import(apiUrl);
 

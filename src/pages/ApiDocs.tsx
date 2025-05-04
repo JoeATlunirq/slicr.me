@@ -7,25 +7,33 @@ import CodeBlock from '@/components/CodeBlock'; // We'll create this helper next
 
 const ApiDocs: React.FC = () => {
 
-  const curlExample = `curl -X POST \\
+  const curlExample = `# --- Replace YOUR_API_KEY_HERE with the key from your .env (VITE_SLICR_API_KEY) --- 
+curl -X POST \\
   https://www.slicr.me/api/process \\
+  -H 'X-API-Key: YOUR_API_KEY_HERE' \\
   -F 'audioFile=@/path/to/your/audio.wav' \\
-  -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "targetDuration": 60.0}'
+  -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "targetDuration": 60.0, "transcribe": true, "exportFormat": "mp3"}'
 
 # OR using URL:
 curl -X POST \\
   https://www.slicr.me/api/process \\
+  -H 'X-API-Key: YOUR_API_KEY_HERE' \\
   -F 'audioUrl=https://example.com/audio.mp3' \\
-  -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "targetDuration": 60.0}'`;
+  -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "targetDuration": 60.0, "transcribe": false, "exportFormat": "wav"}'`;
 
-  const jsExample = `// Option 1: Using File object
+  const jsExample = `// Replace 'YOUR_API_KEY_HERE' with the key from your .env (VITE_SLICR_API_KEY)
+const apiKey = 'YOUR_API_KEY_HERE'; 
+
+// Option 1: Using File object
 const audioFile = /* get your File object */;
 const paramsFile = {
     thresholdDb: -40,       
     minDuration: 0.2,       
     leftPadding: 0.05,      
     rightPadding: 0.05,    
-    targetDuration: 60.0,   // Optional: Target duration > 0. Speeds up only, doesn't slow down.
+    targetDuration: 60.0,   // Optional: Target duration > 0. Speeds up only.
+    transcribe: true,       // Optional: Set to true to generate SRT subtitles.
+    exportFormat: "mp3"     // Optional: 'wav' or 'mp3'. Default is 'wav'.
 };
 const formDataFile = new FormData();
 formDataFile.append('audioFile', audioFile);
@@ -38,7 +46,9 @@ const paramsUrl = {
     minDuration: 0.2,       
     leftPadding: 0.05,      
     rightPadding: 0.05,    
-    targetDuration: 60.0,   // Optional: Target duration > 0. Speeds up only, doesn't slow down.
+    targetDuration: null,   // Omit or null for no speed change.
+    transcribe: false,      // Default
+    exportFormat: "wav"     // Default
 };
 const formDataUrl = new FormData();
 formDataUrl.append('audioUrl', audioUrl);
@@ -49,32 +59,38 @@ const formData = formDataFile; // Or formDataUrl
 
 fetch('https://www.slicr.me/api/process', {
     method: 'POST',
+    headers: {
+      // Add the required API Key header
+      'X-API-Key': apiKey
+    },
     body: formData
 })
 .then(response => {
     if (!response.ok) {
-        throw new Error(\`HTTP error! status: \${response.status}\`);
+        // Handle non-JSON error responses if necessary
+        return response.json().then(errData => Promise.reject(errData)).catch(() => { throw new Error(\`HTTP error! status: \${response.status}\`); });
     }
     return response.json();
 })
 .then(data => {
     console.log('Success:', data);
-    // data format: { success: true, files: [{ filename: string, data: string (base64) }] }
-    // Decode base64 data and handle the file
+    // data format: { success: true, audioUrl: string, srtUrl?: string }
+    // Use the URLs (e.g., trigger downloads)
 })
 .catch(error => {
     console.error('Error:', error);
-    // Handle error response: { success: false, error: string }
+    // error format: { success: false, error: string }
 });`;
 
   const successResponseExample = `{
   "success": true,
-  "fileUrl": "https://your-bucket-name.s3.your-region.amazonaws.com/processed_audio_1234567890.wav"
+  "audioUrl": "https://your-bucket-name.s3.your-region.amazonaws.com/processed_audio_1234567890.mp3",
+  "srtUrl": "https://your-bucket-name.s3.your-region.amazonaws.com/processed_audio_1234567890.srt" // Only present if requested and successful
 }`;
 
   const errorResponseExample = `{
   "success": false,
-  "error": "Error message describing the issue (e.g., 'No audio file uploaded', 'FFmpeg processing failed')"
+  "error": "Error message describing the issue (e.g., 'No audio file uploaded', 'FFmpeg processing failed', 'Transcription failed')"
 }`;
 
 
@@ -99,12 +115,23 @@ fetch('https://www.slicr.me/api/process', {
             <CardTitle>Endpoint: /api/process</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <p>This endpoint processes an uploaded audio file based on the provided parameters, performing silence removal and optional speed adjustment.</p>
+            <p>This endpoint processes an uploaded audio file or URL based on the provided parameters, performing silence removal, optional speed adjustment, optional transcription, and export format conversion.</p>
             <ul>
               <li><strong>Method:</strong> <code className="bg-muted px-1 rounded">POST</code></li>
               <li><strong>Content-Type:</strong> <code className="bg-muted px-1 rounded">multipart/form-data</code></li>
               <li><strong>URL:</strong> <code className="bg-muted px-1 rounded">https://www.slicr.me/api/process</code> (Replace with your actual domain if different)</li>
+              <li><strong>Authentication:</strong> Requires an API key sent in the <code className="bg-muted px-1 rounded">X-API-Key</code> header.</li>
             </ul>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Authentication</CardTitle>
+          </CardHeader>
+          <CardContent>
+             <p>Requests to the <code className="bg-muted px-1 rounded">/api/process</code> endpoint must include a valid API key in the <code className="bg-muted px-1 rounded">X-API-Key</code> HTTP header.</p>
+             <p className="mt-2 text-sm text-muted-foreground">Please contact the administrator if you require an API key.</p>
           </CardContent>
         </Card>
 
@@ -175,15 +202,21 @@ fetch('https://www.slicr.me/api/process', {
                  <tr>
                    <td className="border border-border p-2"><code className="font-mono">targetDuration</code></td>
                    <td className="border border-border p-2">Number | null</td>
-                   <td className="border border-border p-2">Target final duration in seconds. If provided and **shorter** than the original duration, the audio will be sped up (pitch preserved) to meet the target. If omitted, null, or **longer** than the original duration, the audio speed is not changed.</td>
+                   <td className="border border-border p-2">Target final duration in seconds. If provided and shorter than the original duration, the audio will be sped up. Otherwise, speed is not changed.</td>
                    <td className="border border-border p-2"><code className="font-mono">60.0</code> or <code className="font-mono">null</code></td>
                  </tr>
-                  {/* <tr>
-                    <td className="border border-border p-2"><code className="font-mono">exportAsSections</code></td>
-                    <td className="border border-border p-2">Boolean</td>
-                    <td className="border border-border p-2">If true, attempts to export each audible segment as a separate file. (Currently not implemented server-side, returns single file).</td>
-                   <td className="border border-border p-2"><code className="font-mono">false</code></td>
-                  </tr> */}
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">transcribe</code></td>
+                   <td className="border border-border p-2">Boolean</td>
+                   <td className="border border-border p-2">If true, attempts to generate word-level SRT subtitles using Whisper. (Default: false)</td>
+                   <td className="border border-border p-2"><code className="font-mono">true</code></td>
+                 </tr>
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">exportFormat</code></td>
+                   <td className="border border-border p-2">String</td>
+                   <td className="border border-border p-2">Desired output format for the audio file. Options: 'wav' (default) or 'mp3'.</td>
+                   <td className="border border-border p-2"><code className="font-mono">"mp3"</code></td>
+                 </tr>
                </tbody>
              </table>
           </CardContent>
@@ -213,7 +246,7 @@ fetch('https://www.slicr.me/api/process', {
              <p>The API will respond with a JSON object.</p>
              <div>
                 <h4 className="font-semibold mb-2">Success (Status Code 200):</h4>
-                 <p className="text-sm mb-2">Indicates successful processing. The <code className="bg-muted px-1 rounded">fileUrl</code> field contains a publicly accessible URL to the processed WAV file stored in AWS S3.</p>
+                 <p className="text-sm mb-2">Indicates successful processing. The <code className="bg-muted px-1 rounded">audioUrl</code> field contains a publicly accessible URL to the processed audio file (WAV or MP3) stored in AWS S3. If transcription was requested and successful, the <code className="bg-muted px-1 rounded">srtUrl</code> field will also be present.</p>
                 <CodeBlock language="json" code={successResponseExample} />
              </div>
              <div>

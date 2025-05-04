@@ -6,9 +6,12 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Scissors, Download, Settings, ArrowLeft, Upload, RotateCcw, Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { toast } from "@/hooks/use-toast";
+import { toast, useToast } from "@/hooks/use-toast";
 import Timeline from "./Timeline";
 import { audioBufferToWavBlob } from "@/lib/audioUtils";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
 // --- Define Ref Handle Type for Timeline ---
 export interface TimelineHandle {
@@ -81,9 +84,23 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
   const [displayEstimatedDuration, setDisplayEstimatedDuration] = useState<number | null>(null);
   // ----------------------------------------
 
+  const [transcribeEnabled, setTranscribeEnabled] = useState<boolean>(false);
+
+  // --- State for Export Format ---
+  const [exportFormat, setExportFormat] = useState<'wav' | 'mp3'>('wav'); // Default to WAV
+  // -----------------------------
+
+  // --- State for Export Status Message ---
+  const [exportStatusMessage, setExportStatusMessage] = useState<string>("");
+  // ---------------------------------------
+
   // --- Audio Context State ---
   const audioCtxRef = useRef<AudioContext | null>(null);
   // ---------------------------------------
+
+  // --- Get dismiss function from useToast hook ---
+  const { dismiss: dismissToast } = useToast();
+  // ----------------------------------------------
 
   // --- Recalculate Processed Duration --- 
   // This needs access to *all* deleted regions (manual+auto), which is currently
@@ -296,7 +313,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
   // Silence detection: Updated to take dBFS threshold
   function detectSilence(
       buffer: AudioBuffer, 
-      thresholdDbValue: number, // Now expects dBFS
+      thresholdDbValue: number, // Now expects dB value
       minDuration: number, 
       paddingStart: number, 
       paddingEnd: number
@@ -481,8 +498,10 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
     }
 
     setIsExportProcessing(true);
-    const exportType = exportAsSections ? "Segments" : "Full Processed Audio";
-    toast({ title: `Exporting ${exportType}...`, description: "Sending to server for processing..." });
+    const exportType = exportFormat.toUpperCase();
+    // --- Set initial status message --- 
+    setExportStatusMessage(`Sending to server (${exportType})...`);
+    toast({ title: `Preparing Export (${exportType})...`, description: "Sending file to server..." }); // Keep toast for consistency
 
     // --- Prepare data for API --- 
     if (!originalFile) {
@@ -498,7 +517,9 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
         rightPadding: rightPadding[0],
         targetDuration: targetDuration,
         exportAsSections: exportAsSections,
-        responseFormat: 'base64'
+        transcribe: transcribeEnabled,
+        exportFormat: exportFormat,
+        responseFormat: 'link'
     };
 
     const formData = new FormData();
@@ -516,30 +537,165 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
         return;
     }
 
+    // Get API Key from environment variables
+    const apiKey = import.meta.env.VITE_SLICR_API_KEY;
+    if (!apiKey) {
+      toast({ title: "Configuration Error", description: "API Key is missing in frontend configuration.", variant: "destructive" });
+      setIsExportProcessing(false);
+      setExportStatusMessage("Configuration Error");
+      return;
+    }
+
     try {
-      // --- Call API --- 
+      // --- Call API with Auth Header --- 
+      setExportStatusMessage("Processing on server..."); // Update status
       const response = await fetch('/api/process', {
           method: 'POST',
-          body: formData, 
-          // Headers are automatically set by browser for FormData
+          headers: {
+            // Add the API Key header
+            'X-API-Key': apiKey
+          },
+          body: formData
       });
 
-      setIsExportProcessing(false); // Stop loading indicator
+      // --- Enhanced Response Handling --- 
+      let result;
+      try {
+          const responseText = await response.text();
+          console.log("[API Export] Raw Response Text:", responseText);
 
-      if (!response.ok) {
-          const errorData = await response.json().catch(() => ({ error: "Unknown server error" }));
-          throw new Error(`Server error: ${response.status} - ${errorData?.error || response.statusText}`);
+          if (!response.ok) {
+              // Try parsing error JSON, fallback to text
+              let errorMsg = `Server error: ${response.status} ${response.statusText}`;
+              try {
+                  const errorData = JSON.parse(responseText);
+                  errorMsg = `${errorMsg} - ${errorData?.error || 'Unknown server error details'}`;
+              } catch (parseError) {
+                  errorMsg = `${errorMsg} - Response: ${responseText}`;
+              }
+              throw new Error(errorMsg);
+          }
+
+          // If response.ok, try parsing the text as JSON
+          try {
+              result = JSON.parse(responseText);
+              console.log("[API Export] Parsed Response JSON:", result);
+          } catch (parseError) {
+              console.error("[API Export] Failed to parse response JSON:", parseError);
+              throw new Error(`Failed to parse server response. Raw response: ${responseText}`);
+          }
+
+      } catch (fetchError) {
+          // Catch errors from fetch() itself or response processing
+          console.error("[API Export] Error fetching or processing response:", fetchError);
+          setIsExportProcessing(false); // Stop loading indicator
+          toast({ title: "Network/Response Error", description: `Failed to communicate with server: ${fetchError instanceof Error ? fetchError.message : 'Unknown network error'}`, variant: "destructive" });
+          return; // Exit the function early
+      }
+      // --- End Enhanced Response Handling ---
+
+      setIsExportProcessing(false); // Stop loading indicator (moved after response handling)
+
+      // --- Check Parsed Result --- 
+      // Check if result is defined and has the expected structure
+      if (!result || !result.success || !(result.audioUrl || result.srtUrl)) {
+         const errorDetail = result?.error || "API did not return valid file data or success was false.";
+         console.error("[API Export] Invalid result structure or success=false:", result);
+         throw new Error(errorDetail); // Use specific error if available
+      }
+      // ---------------------------
+
+      console.log("[API Export] Received success response structure is valid:", result);
+
+      // --- Handle downloaded files/links (using fetch for forced download) --- 
+      let downloaded = false;
+      
+      // Helper function for forced download
+      const forceDownload = async (url: string, defaultFilename: string) => {
+          if (!url) return false;
+          let downloadToastId: string | number | undefined = undefined;
+          try {
+              // Update status message for download
+              setExportStatusMessage(`Fetching ${defaultFilename}...`);
+              // Store the ID from the toast return value
+              const toastInstance = toast({ title: "Downloading...", description: `Fetching ${defaultFilename}...` });
+              downloadToastId = toastInstance?.id; // Use optional chaining
+              const response = await fetch(url);
+              if (!response.ok) {
+                  throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
+              }
+              const blob = await response.blob();
+              const objectUrl = URL.createObjectURL(blob);
+              
+              const link = document.createElement('a');
+              link.href = objectUrl;
+              const filename = url.substring(url.lastIndexOf('/') + 1) || defaultFilename;
+              link.download = filename;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              
+              // Revoke the object URL after a short delay
+              setTimeout(() => URL.revokeObjectURL(objectUrl), 1000); 
+              // Dismiss using the hook's dismiss function
+              if (typeof downloadToastId === 'string') {
+                dismissToast(downloadToastId);
+              }
+              toast({ title: "Download Started", description: `Downloading ${filename}...` });
+              return true;
+          } catch (error) {
+              console.error(`Error forcing download for ${url}:`, error);
+              // Clear status on error
+              setExportStatusMessage("Error occurred.");
+              // Dismiss using the hook's dismiss function
+              if (typeof downloadToastId === 'string') {
+                 dismissToast(downloadToastId);
+              }
+              toast({ title: "Download Error", description: `Could not download ${defaultFilename}. ${error instanceof Error ? error.message : 'Network error'}`, variant: "destructive" });
+              return false;
+          }
+      };
+
+      // Attempt to download audio
+      if (result.audioUrl) {
+          const audioDownloaded = await forceDownload(result.audioUrl, `processed_audio.${exportFormat}`);
+          if (audioDownloaded) downloaded = true;
+      } else {
+          console.warn("[API Export] No audioUrl found in response.");
+      }
+      
+      // Attempt to download SRT
+      if (result.srtUrl) {
+           const srtDownloaded = await forceDownload(result.srtUrl, 'subtitles.srt');
+           if (srtDownloaded) downloaded = true; // Mark as downloaded even if only SRT
+      } else if (transcribeEnabled) {
+          console.warn("[API Export] Transcription requested but no srtUrl found in response.");
       }
 
-      const result = await response.json();
-
-      if (!result.success || !result.files || result.files.length === 0) {
-          throw new Error(result.error || "API did not return valid file data.");
+      if (!downloaded) {
+        // If neither download succeeded
+        toast({ title: "Processing Complete", description: "Server processed the request but downloading failed.", variant: "default"});
       }
 
-      console.log("[API Export] Received success response:", result);
+      // --- Clear status on completion --- 
+      setIsExportProcessing(false);
+      setExportStatusMessage("Export complete."); // Or clear: ""
+      // Optional: Clear message after a delay
+      // setTimeout(() => setExportStatusMessage(""), 3000);
 
-      // --- Handle downloaded files --- 
+      // --- Remove old link handling --- 
+      /*
+      if (result.audioUrl) {
+          // ... old link creation ...
+      }
+      if (result.srtUrl) {
+          // ... old link creation ...
+      }
+      */
+      // --- End old link handling ---
+
+      // --- Remove old base64 handling --- 
+      /*
       // Decode base64 data, create Blob, trigger download
       if (result.files && result.files.length > 0) {
         // TODO: Handle multiple files if exportAsSections is implemented in API
@@ -571,6 +727,8 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
       } else {
          toast({ title: "Processing Complete", description: "Server processed the request but returned no files.", variant: "default"});
       }
+      */
+      // --- End old base64 handling ---
 
       // --- Remove old local processing logic --- 
       /*
@@ -650,7 +808,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
         toast({ title: "Export Error", description: `Failed to export: ${error instanceof Error ? error.message : 'Unknown error'}`, variant: "destructive" });
         setIsExportProcessing(false); // Ensure loading stops on error
     } finally {
-        // Removed redundant setIsExportProcessing(false);
+        setIsExportProcessing(false); // Ensure loading stops even on error
     }
   };
 
@@ -828,6 +986,9 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
       toast({ title: "Timeline Reset", description: "Deletions and markers cleared." });
   };
 
+  // Debug Log for States
+  console.log("[Render Check] hasFile:", hasFile, "audioBuffer exists:", !!audioBuffer, "activeTab:", activeTab);
+
   // Debug Log for Export Button State (moved outside return)
   console.log("[Render] Export Button Disabled Check:", 
       { hasFile, audioBuffer: !!audioBuffer, isExportProcessing },
@@ -845,16 +1006,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
             </Button>
             <h1 className="text-xl font-bold">Slicr.me</h1>
           </div>
-          <div className="flex items-center space-x-2">
-            {/* REMOVED Save Project Button */}
-            {/* <Button variant="outline" disabled={!hasFile}>
-              Save Project
-            </Button> */}
-            {/* Keeping main Export button in header for now? User moved it below... check final location */}
-            {/* <Button disabled={!hasFile} onClick={handleExport}>
-              Export
-            </Button> */}
-          </div>
+          {/* Header Buttons Removed/Moved */}
         </div>
       </header>
 
@@ -862,12 +1014,9 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
       <main className="flex-1 container mx-auto px-4 py-6 flex flex-col md:flex-row gap-6">
         {/* Left: Timeline Area */}
         <div className="md:w-2/3 flex flex-col gap-4">
-          {/* File Drop Area / Timeline Display */}
           {!hasFile ? (
             <div 
-              className={`bg-white rounded-lg border-2 ${
-                dragActive ? "border-primary border-dashed" : "border-gray-200"
-              } flex-1 flex flex-col items-center justify-center p-12`}
+              className={`bg-white rounded-lg border-2 ${dragActive ? "border-primary border-dashed" : "border-gray-200"} flex-1 flex flex-col items-center justify-center p-12`}
               onDragEnter={handleDrag}
               onDragLeave={handleDrag}
               onDragOver={handleDrag}
@@ -875,8 +1024,9 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
             >
               {isProcessing ? (
                 <div className="flex flex-col items-center justify-center">
-                  <div className="w-16 h-16 border-4 border-primary border-t-transparent rounded-full animate-spin mb-4"></div>
-                  <p className="text-xl font-medium text-gray-700">Processing your file...</p>
+                  <Loader2 className="w-16 h-16 text-primary animate-spin mb-4" />
+                  <p className="text-xl font-medium text-gray-700">Loading Audio...</p>
+                  {originalFile && <p className="text-sm text-gray-500 mt-2">{originalFile.name}</p>}
                 </div>
               ) : (
                 <>
@@ -907,7 +1057,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
             </div>
           ) : (
             <div className="bg-white rounded-lg border border-gray-200 flex-1 flex flex-col items-center justify-center p-8">
-              <Timeline ref={timelineRef} audioBuffer={audioBuffer} regions={regions} />
+              <Timeline ref={timelineRef} audioBuffer={audioBuffer} regions={regions} appliedPlaybackRate={appliedPlaybackRate}/>
             </div>
           )}
         </div>
@@ -916,217 +1066,245 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
         <div className="md:w-1/3">
           <Card className="shadow-sm">
             <CardContent className="p-0">
-              {/* Updated Tabs - Only Silence Tab */}
-              <Tabs defaultValue="silence" className="w-full">
-                <TabsList className="w-full grid grid-cols-1">
+              <Tabs defaultValue="silence" className="w-full" onValueChange={setActiveTab} value={activeTab}>
+                <TabsList className="w-full grid grid-cols-2">
                   <TabsTrigger value="silence" className="relative">
                     <Scissors className="h-5 w-5 mr-2" />
-                    Silence Removal Settings
+                    Silence Removal
+                  </TabsTrigger>
+                  <TabsTrigger value="export" className="relative" disabled={!hasFile}>
+                    <Download className="h-5 w-5 mr-2" />
+                    Export Settings
                   </TabsTrigger>
                 </TabsList>
 
+                {/* Silence Settings Tab Content */}
                 <TabsContent value="silence" className="p-4">
-                  <div className="space-y-6">
-                    {/* Top Buttons: Remove Silence & Reset */}
-                    <div className="flex justify-between items-center gap-2">
-                      <Button onClick={handleApplySilenceRemoval} disabled={!hasFile || !audioBuffer} className="flex-1">
-                        Apply Auto Silence Removal
-                      </Button>
-                      <Button onClick={handleReset} variant="outline" disabled={!hasFile}>
-                        <RotateCcw className="h-4 w-4" />
-                      </Button>
-                    </div>
+                   <div className="space-y-6">
+                      {/* Top Buttons: Remove Silence & Reset */} 
+                      <div className="flex justify-between items-center gap-2">
+                        <Button onClick={handleApplySilenceRemoval} disabled={!hasFile || !audioBuffer} className="flex-1">
+                          Apply Auto Silence Removal
+                        </Button>
+                        <Button onClick={handleReset} variant="outline" disabled={!hasFile}>
+                          <RotateCcw className="h-4 w-4" />
+                        </Button>
+                      </div>
 
-                    {/* Settings Group */}
-                    <div className="border-t border-gray-200 pt-4 space-y-6">
-                        {/* Threshold slider - Updated for dBFS */}
-                        <div>
-                          <div className="flex justify-between mb-2">
-                            <label className="text-sm font-medium">Silence Threshold (dBFS)</label>
-                            <span className="text-sm font-mono">{thresholdDb[0].toFixed(1)} dB</span>
+                      {/* Settings Group */} 
+                      <div className="border-t border-gray-200 pt-4 space-y-6">
+                          {/* Threshold slider */} 
+                          <div>
+                            <div className="flex justify-between mb-2">
+                              <label className="text-sm font-medium">Silence Threshold (dBFS)</label>
+                              <span className="text-sm font-mono">{thresholdDb[0].toFixed(1)} dB</span>
+                            </div>
+                            <p className="text-xs text-gray-500 mb-2">Audio below this level is treated as silent (0 dB is max).</p>
+                            <div className="flex items-center">
+                              <Slider 
+                                value={thresholdDb} 
+                                onValueChange={setThresholdDb}
+                                min={-60}
+                                max={0}
+                                step={0.5}
+                                disabled={!hasFile}
+                              />
+                            </div>
                           </div>
-                          <p className="text-xs text-gray-500 mb-2">Audio below this level is treated as silent (0 dB is max).</p>
-                          <div className="flex items-center">
+
+                          {/* Minimum Duration slider */} 
+                          <div>
+                            <div className="flex justify-between mb-2">
+                               <label className="text-sm font-medium">Minimum Silence Duration</label>
+                               <span className="text-sm font-mono">{minDuration[0].toFixed(2)} s</span>
+                            </div>
+                             <p className="text-xs text-gray-500 mb-2">Silence shorter than this duration will be ignored.</p>
                             <Slider 
-                              value={thresholdDb} 
-                              onValueChange={setThresholdDb}
-                              min={-60} // dBFS range
-                              max={0}
-                              step={0.5}
+                              value={minDuration} 
+                              onValueChange={setMinDuration}
+                               max={2}
+                              step={0.01}
                               disabled={!hasFile}
                             />
                           </div>
-                        </div>
 
-                        {/* Minimum Duration slider */}
-                        <div>
-                          <div className="flex justify-between mb-2">
-                             <label className="text-sm font-medium">Minimum Silence Duration</label>
-                             <span className="text-sm font-mono">{minDuration[0].toFixed(2)} s</span>
-                          </div>
-                           {/* Clarified description */}
-                           <p className="text-xs text-gray-500 mb-2">Silence shorter than this duration will be ignored.</p>
-                          <Slider 
-                            value={minDuration} 
-                            onValueChange={setMinDuration}
-                             max={2} // Keeping 0-2s for now
-                            step={0.01}
-                            disabled={!hasFile}
-                          />
-                        </div>
-
-                        {/* Padding sliders */}
-                        <div>
-                          <label className="text-sm font-medium block mb-2">Padding</label>
-                          <p className="text-xs text-gray-500 mb-2">Keep some silence around cuts.</p>
-                          
-                          <div className="flex justify-between items-center gap-4 mb-2">
-                            <div className="flex-1">
-                              <div className="flex justify-between mb-1">
-                                <span className="text-xs">Left</span>
-                                <span className="text-xs font-mono">{leftPadding[0].toFixed(4)} s</span>
-                              </div>
-                              <Slider 
-                                value={leftPadding} 
-                                onValueChange={(value) => {
-                                    setLeftPadding(value);
-                                    if (paddingLinked) setRightPadding(value);
-                                }}
-                                max={0.2}
-                                step={0.0001}
-                                disabled={!hasFile}
-                              />
-                            </div>
+                          {/* Padding sliders */} 
+                          <div>
+                            <label className="text-sm font-medium block mb-2">Padding</label>
+                            <p className="text-xs text-gray-500 mb-2">Keep some silence around cuts.</p>
                             
-                            <div className="flex-1">
-                              <div className="flex justify-between mb-1">
-                                <span className="text-xs">Right</span>
-                                <span className="text-xs font-mono">{rightPadding[0].toFixed(4)} s</span>
-                              </div>
-                              <Slider 
-                                value={rightPadding} 
-                                onValueChange={(value) => {
-                                    setRightPadding(value);
-                                    if (paddingLinked) setLeftPadding(value);
-                                }}
-                                max={0.2}
-                                step={0.0001}
-                                disabled={!hasFile}
-                              />
-                            </div>
-                          </div>
-                          
-                          <div className="flex items-center justify-center mt-1">
-                            <Button 
-                              variant={paddingLinked ? "secondary" : "outline"} 
-                              size="sm"
-                              className="text-xs"
-                              onClick={() => setPaddingLinked(!paddingLinked)}
-                              title={paddingLinked ? "Unlink Padding" : "Link Padding"}
-                              disabled={!hasFile}
-                            >
-                              {paddingLinked ? "🔒 Linked" : "🔓 Unlinked"}
-                            </Button>
-                          </div>
-                        </div>
-                        {/* --- End Padding --- */}
-
-                        {/* --- Target Duration Settings - NEW --- */}
-                        <div className="border-t border-gray-200 pt-4 space-y-4">
-                            <h3 className="text-sm font-medium">Adjust Speed to Target Duration</h3>
-                            
-                            {/* Display Current Duration */}
-                            <div className="text-sm">
-                                Estimated Current Duration: 
-                                <span className="font-mono ml-2">
-                                    {displayEstimatedDuration !== null ? `${displayEstimatedDuration.toFixed(2)}s` : (currentProcessedDuration !== null ? `${currentProcessedDuration.toFixed(2)}s` : 'N/A')}
-                                </span>
-                                {/* Moved Rate Display Here */} 
-                                {appliedPlaybackRate !== null && appliedPlaybackRate !== 1 && (
-                                    <span className="text-xs text-muted-foreground ml-2">
-                                        (Rate: {appliedPlaybackRate.toFixed(2)}x)
-                                    </span>
-                                )}
-                            </div>
-
-                            {/* Target Duration Input & Apply Button */}
-                        <div className="flex items-center gap-2">
-                                <input 
-                                    type="number"
-                                    id="target-duration"
-                                    step="0.1"
-                                    min="0.1" // Needs a minimum duration
-                                    value={targetDuration === null ? '' : targetDuration}
-                                    onChange={(e) => {
-                                        const val = e.target.value;
-                                        setTargetDuration(val === '' ? null : Math.max(0.1, parseFloat(val)));
-                                    }}
-                                    placeholder={currentProcessedDuration !== null ? `${currentProcessedDuration.toFixed(2)}` : 'e.g., 60'}
-                                    className="flex-grow p-2 border rounded bg-background disabled:cursor-not-allowed disabled:opacity-50" // Use flex-grow
-                            disabled={!hasFile}
-                          />
-                                <Button 
-                                    onClick={handleApplySpeedAdjustment} 
-                                    disabled={!hasFile || !audioBuffer || !targetDuration || targetDuration <= 0 || !currentProcessedDuration}
-                                    variant="secondary" 
-                                    className="flex-shrink-0" // Prevent button from shrinking too much
-                                >
-                                    Apply
-                                </Button>
-                            </div>
-                            {/* Display the applied rate if active */}
-                            {appliedPlaybackRate !== null && (
-                                <div className="text-xs text-muted-foreground text-center">
+                            <div className="flex justify-between items-center gap-4 mb-2">
+                              <div className="flex-1">
+                                <div className="flex justify-between mb-1">
+                                  <span className="text-xs">Left</span>
+                                  <span className="text-xs font-mono">{leftPadding[0].toFixed(4)} s</span>
                                 </div>
-                            )}
-                        </div>
-
-                            {/* --- Export as Sections Toggle - NEW --- */}
-                            <div className="border-t border-gray-200 pt-4">
-                               <div className="flex items-center justify-between">
-                                    <label htmlFor="export-sections-toggle" className="text-sm font-medium">
-                                        Export as Separate Sections
-                                        <p className="text-xs text-gray-500 font-normal">Exports one file per audible segment.</p>
-                                    </label>
-                                    <Switch 
-                                        id="export-sections-toggle"
-                                        checked={exportAsSections}
-                                        onCheckedChange={setExportAsSections}
-                              disabled={!hasFile}
-                            />
-                               </div>
-                           </div>
-                            {/* --- End Toggle --- */}
-
-                            {/* --- Export Button - MOVED HERE --- */}
-                            <div className="border-t border-gray-200 pt-4">
-                                <Button 
-                                    onClick={handleExportSegments} 
-                                    disabled={!hasFile || !audioBuffer || isExportProcessing} 
-                                    className="w-full"
-                                >
-                                    {isExportProcessing ? (
-                                        <Loader2 className="h-4 w-4 mr-2 animate-spin" /> 
-                                    ) : (
-                                        <Download className="h-4 w-4 mr-2" />
-                                    )}
-                                    {isExportProcessing ? 'Processing Export...' : 
-                                    (exportAsSections ? "Export Audio Segments (WAV)" : "Export Full Processed Audio (WAV)")
-                                }
-                            </Button>
-                            {/* Updated Text */} 
-                            <p className="text-xs text-gray-500 mt-2 text-center">
-                                {appliedPlaybackRate && appliedPlaybackRate !== 1 
-                                    ? 'Exports with speed/pitch change applied.' 
-                                    : 'Exports at original speed.'
-                                }
-                            </p> 
-                        </div>
-                        {/* --- End Export Button --- */}
+                                <Slider 
+                                  value={leftPadding} 
+                                  onValueChange={(value) => {
+                                      setLeftPadding(value);
+                                      if (paddingLinked) setRightPadding(value);
+                                  }}
+                                  max={0.2}
+                                  step={0.0001}
+                                  disabled={!hasFile}
+                                />
+                              </div>
+                              
+                              <div className="flex-1">
+                                <div className="flex justify-between mb-1">
+                                  <span className="text-xs">Right</span>
+                                  <span className="text-xs font-mono">{rightPadding[0].toFixed(4)} s</span>
+                                </div>
+                                <Slider 
+                                  value={rightPadding} 
+                                  onValueChange={(value) => {
+                                      setRightPadding(value);
+                                      if (paddingLinked) setLeftPadding(value);
+                                  }}
+                                  max={0.2}
+                                  step={0.0001}
+                                  disabled={!hasFile}
+                                />
+                              </div>
+                            </div>
+                            
+                            <div className="flex items-center justify-center mt-1">
+                              <Button 
+                                variant={paddingLinked ? "secondary" : "outline"} 
+                                size="sm"
+                                className="text-xs"
+                                onClick={() => setPaddingLinked(!paddingLinked)}
+                                title={paddingLinked ? "Unlink Padding" : "Link Padding"}
+                                disabled={!hasFile}
+                              >
+                                {paddingLinked ? "🔒 Linked" : "🔓 Unlinked"}
+                              </Button>
+                            </div>
+                          </div>
+                          {/* --- End Padding --- */} 
+                      </div>
                     </div>
-                  </div>
                 </TabsContent>
-              
+                
+                {/* Export Settings Tab Content */} 
+                <TabsContent value="export" className="p-4">
+                   <div className="relative space-y-6">
+                     {/* Loading Overlay */} 
+                     {isExportProcessing && (
+                       <div className="absolute inset-0 bg-white/80 dark:bg-black/80 flex flex-col items-center justify-center z-10 rounded-md">
+                         <Loader2 className="h-8 w-8 text-primary animate-spin mb-3" />
+                         <p className="text-sm font-medium text-center px-4">{exportStatusMessage || "Processing..."}</p>
+                       </div>
+                     )}
+
+                     {/* Actual Content (Target Duration) */} 
+                     <div className={`space-y-4 ${isExportProcessing ? 'opacity-50' : ''}`}> 
+                         <h3 className="text-sm font-medium">Adjust Speed to Target Duration</h3>
+                         <div className="text-sm">
+                              Estimated Current Duration:
+                              <span className="font-mono ml-2">
+                                  {displayEstimatedDuration !== null ? `${displayEstimatedDuration.toFixed(2)}s` : (currentProcessedDuration !== null ? `${currentProcessedDuration.toFixed(2)}s` : 'N/A')}
+                              </span>
+                              {appliedPlaybackRate !== null && appliedPlaybackRate !== 1 && (
+                                  <span className="text-xs text-muted-foreground ml-2">
+                                      (Rate: {appliedPlaybackRate.toFixed(2)}x)
+                                  </span>
+                              )}
+                          </div>
+                         <div className="flex items-center gap-2">
+                                 <input 
+                                     type="number"
+                                     id="target-duration"
+                                     step="0.1"
+                                     min="0.1"
+                                     value={targetDuration === null ? '' : targetDuration}
+                                     onChange={(e) => {
+                                         const val = e.target.value;
+                                         setTargetDuration(val === '' ? null : Math.max(0.1, parseFloat(val)));
+                                     }}
+                                     placeholder={currentProcessedDuration !== null ? `${currentProcessedDuration.toFixed(2)}` : 'e.g., 60'}
+                                     className="flex-grow p-2 border rounded bg-background disabled:cursor-not-allowed disabled:opacity-50"
+                                     disabled={!hasFile}
+                                 />
+                                 <Button 
+                                     onClick={handleApplySpeedAdjustment} 
+                                     disabled={!hasFile || !audioBuffer || !targetDuration || targetDuration <= 0 || !currentProcessedDuration}
+                                     variant="secondary" 
+                                     className="flex-shrink-0"
+                                 >
+                                     Apply
+                                 </Button>
+                             </div>
+                         </div>
+                     {/* End Target Duration */} 
+
+                     {/* Grouped Export Options */} 
+                     <div className={`border-t border-gray-200 pt-4 space-y-6 ${isExportProcessing ? 'opacity-50' : ''}`}> 
+                       <h3 className="text-sm font-medium mb-2">Export Options</h3>
+                       {/* Transcription Checkbox */} 
+                       <div className="pt-0">
+                          <div className="flex items-center justify-between">
+                                <Label htmlFor="transcribe-toggle" className="text-sm font-medium">
+                                    Generate Subtitles (SRT)
+                                    <p className="text-xs text-gray-500 font-normal">Creates word-level timestamps via Whisper.</p>
+                                </Label>
+                                <Checkbox 
+                                    id="transcribe-toggle"
+                                    checked={transcribeEnabled}
+                                    onCheckedChange={(checked) => setTranscribeEnabled(Boolean(checked))}
+                                    disabled={!hasFile}
+                                />
+                           </div>
+                       </div>
+                       {/* Export Format Selection */} 
+                       <div className="pt-0">
+                           <Label className="text-sm font-medium block mb-2">Export Format</Label>
+                           <RadioGroup 
+                               defaultValue={exportFormat}
+                               value={exportFormat} 
+                               onValueChange={(value: 'wav' | 'mp3') => setExportFormat(value)}
+                               className="flex space-x-4"
+                               disabled={!hasFile}
+                           >
+                               <div className="flex items-center space-x-2">
+                                   <RadioGroupItem value="wav" id="format-wav" disabled={!hasFile} />
+                                   <Label htmlFor="format-wav" className={`text-sm ${!hasFile ? 'text-gray-400 cursor-not-allowed' : ''}`}>WAV (Lossless)</Label>
+                               </div>
+                               <div className="flex items-center space-x-2">
+                                   <RadioGroupItem value="mp3" id="format-mp3" disabled={!hasFile} />
+                                   <Label htmlFor="format-mp3" className={`text-sm ${!hasFile ? 'text-gray-400 cursor-not-allowed' : ''}`}>MP3 (Compressed)</Label>
+                               </div>
+                           </RadioGroup>
+                           <p className="text-xs text-gray-500 mt-1">MP3 is smaller (faster upload, good for transcription) but loses some quality.</p>
+                       </div>
+                       {/* Export Button */} 
+                       <div className="pt-0">
+                           <Button 
+                               onClick={handleExportSegments} 
+                               disabled={!hasFile || !audioBuffer || isExportProcessing} 
+                               className="w-full"
+                           >
+                               {isExportProcessing ? (
+                                   <Loader2 className="h-4 w-4 mr-2 animate-spin" /> 
+                               ) : (
+                                   <Download className="h-4 w-4 mr-2" />
+                               )}
+                               {isExportProcessing ? 'Processing Export...' : 
+                               `Export Processed Audio (${exportFormat.toUpperCase()})`
+                               }
+                           </Button>
+                           <p className="text-xs text-gray-500 mt-2 text-center">
+                               {appliedPlaybackRate && appliedPlaybackRate !== 1 
+                                   ? 'Exports with speed/pitch change applied.' 
+                                   : 'Exports at original speed.'
+                               }
+                           </p> 
+                       </div>
+                     </div>
+                     {/* End Grouped Export Options */} 
+                   </div>
+                </TabsContent>
               </Tabs>
             </CardContent>
           </Card>
@@ -1135,21 +1313,5 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
     </div>
   );
 };
-
-// Add a Play icon component since it's not imported from lucide-react
-const Play = ({ className }: { className?: string }) => (
-  <svg 
-    xmlns="http://www.w3.org/2000/svg" 
-    viewBox="0 0 24 24" 
-    fill="none" 
-    stroke="currentColor" 
-    strokeWidth="2" 
-    strokeLinecap="round" 
-    strokeLinejoin="round" 
-    className={className}
-  >
-    <polygon points="5 3 19 12 5 21 5 3" />
-  </svg>
-);
 
 export default AppInterface;

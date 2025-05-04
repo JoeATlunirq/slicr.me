@@ -10,9 +10,25 @@ import process from 'process';
 import axios from 'axios';
 import ffprobeStatic from 'ffprobe-static';
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import OpenAI from 'openai';
+
+// --- API Key Check --- 
+const EXPECTED_API_KEY = process.env.PROCESS_API_KEY;
+// ---------------------
 
 // --- AWS S3 Configuration --- 
 const { AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET_NAME } = process.env;
+
+// --- OpenAI Configuration ---
+const { OPENAI_API_KEY } = process.env;
+let openai = null;
+if (OPENAI_API_KEY) {
+    openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+    console.log("[API Init] OpenAI Client Initialized.");
+} else {
+    console.warn("[API Init] OPENAI_API_KEY not found. Transcription feature will be disabled.");
+}
+// --- End OpenAI Configuration ---
 
 // --- Add careful logging --- 
 console.log(`[API Init Debug] AWS_REGION: ${AWS_REGION}`);
@@ -69,8 +85,76 @@ async function downloadFile(url, outputPath) {
   });
 }
 
+// --- Helper Function: Generate SRT from Whisper Words ---
+// Revised formatTimestamp to preserve milliseconds
+function formatTimestamp(totalSeconds) {
+    if (typeof totalSeconds !== 'number' || totalSeconds < 0) {
+        return '00:00:00,000'; // Return default for invalid input
+    }
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = Math.floor(totalSeconds % 60);
+    // Calculate milliseconds from the fractional part, ensuring it's between 0 and 999
+    const milliseconds = Math.round((totalSeconds - Math.floor(totalSeconds)) * 1000);
+    
+    const hoursStr = hours.toString().padStart(2, '0');
+    const minutesStr = minutes.toString().padStart(2, '0');
+    const secondsStr = seconds.toString().padStart(2, '0');
+    const millisecondsStr = milliseconds.toString().padStart(3, '0');
+
+    return `${hoursStr}:${minutesStr}:${secondsStr},${millisecondsStr}`;
+}
+
+function generateSrtFromWhisperWords(words) {
+    if (!words || words.length === 0) {
+        return '';
+    }
+    let srtContent = '';
+    words.forEach((wordData, index) => {
+        const { start, end, word } = wordData;
+        // Basic check for valid timestamps
+        if (typeof start !== 'number' || typeof end !== 'number' || start > end) {
+            console.warn(`[SRT Gen] Skipping invalid word data: ${JSON.stringify(wordData)}`);
+            return; // Skip this entry
+        }
+        const startTime = formatTimestamp(start);
+        const endTime = formatTimestamp(end);
+        // Remove leading/trailing spaces from word, handle potential empty words after trimming
+        const trimmedWord = word.trim(); 
+        if (!trimmedWord) {
+            console.warn(`[SRT Gen] Skipping empty word data after trim: ${JSON.stringify(wordData)}`);
+            return; // Skip this entry if word becomes empty after trim
+        } 
+        
+        srtContent += `${index + 1}\n`;
+        srtContent += `${startTime} --> ${endTime}\n`;
+        srtContent += `${trimmedWord}\n\n`;
+    });
+    return srtContent;
+}
+// --- End Helper Function ---
+
 // Export default handler function
 export default async function handler(req, res) {
+
+  // --- API Key Verification --- 
+  if (!EXPECTED_API_KEY) {
+    console.error("[API Auth] CRITICAL: PROCESS_API_KEY environment variable not set on server.");
+    res.statusCode = 500;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ success: false, error: 'Server configuration error.' }));
+    return;
+  }
+  const providedApiKey = req.headers['x-api-key']; // Read from custom header (lowercase)
+  if (providedApiKey !== EXPECTED_API_KEY) {
+    console.warn(`[API Auth] Failed API Key attempt. Provided: ${providedApiKey}`);
+    res.statusCode = 403; // Forbidden
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ success: false, error: 'Invalid API Key.' }));
+    return;
+  }
+  // --- End API Key Verification ---
+
   // Re-add method check
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -102,6 +186,13 @@ export default async function handler(req, res) {
   let intermediateOutputPath = null; // Declare intermediate path here
   let finalOutputPath = null; // Declare final path here
   let pathToUpload = null; // Declare upload path here
+  let srtOutputPath = null; // Declare SRT output path
+  let s3SrtKey = null; // Declare S3 key for SRT
+  let mp3OutputPath = null; // Declare MP3 output path if needed
+  let finalExportFormat = 'wav'; // Default export format
+  let finalS3Key = ''; // S3 Key with correct extension
+  let finalContentType = 'audio/wav'; // Default content type
+  let whisperInputPath = null; // Separate path for Whisper input (always MP3)
 
   try {
     // --- Get Input: File Upload OR URL --- 
@@ -206,7 +297,14 @@ export default async function handler(req, res) {
     // Assign to outer scope variables
     intermediateOutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_intermediate.wav`);
     finalOutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_final.wav`);
-    const s3Key = `${baseOutputFilename}_final.wav`;
+    // Determine final S3 key based on export format
+    finalS3Key = `${baseOutputFilename}_final.${finalExportFormat}`;
+    finalContentType = finalExportFormat === 'mp3' ? 'audio/mpeg' : 'audio/wav';
+    // Assign MP3 path (even if not used, for cleanup)
+    mp3OutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_final.mp3`);
+    // Assign SRT paths as well (SRT key remains the same)
+    srtOutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_final.srt`);
+    s3SrtKey = `${baseOutputFilename}_final.srt`;
     // -----------------------------
 
     console.log(`[API] Input Path for Processing: ${finalInputPath}`);
@@ -220,8 +318,11 @@ export default async function handler(req, res) {
     const leftPadding = parseFloat(params.leftPadding ?? 0.0332);
     const rightPadding = parseFloat(params.rightPadding ?? 0.0332);
     const targetDurationParam = params.targetDuration ? parseFloat(params.targetDuration) : null;
-    const responseFormat = params.responseFormat || 'link'; // Default to link
-    console.log(`[API] Response format requested: ${responseFormat}`);
+    const transcribe = params.transcribe === true || params.transcribe === 'true'; // Check for boolean or string 'true'
+    // Get requested export format, default to wav
+    finalExportFormat = (params.exportFormat === 'mp3') ? 'mp3' : 'wav'; 
+    console.log(`[API] Transcription requested: ${transcribe}`);
+    console.log(`[API] Export format requested: ${finalExportFormat}`);
     // ------------------------
 
     // --- FFmpeg Pass 1: Silence Removal --- 
@@ -346,59 +447,197 @@ export default async function handler(req, res) {
     }
     // --- End FFmpeg Pass 2 ---
 
-    // --- Check Final File for Upload/Processing --- 
-    if (!pathToUpload || !fs.existsSync(pathToUpload) || fs.statSync(pathToUpload).size === 0) {
-      console.error(`[API] File to process (${pathToUpload || 'path unknown'}) missing or empty.`);
-      throw new Error('Processing failed to produce a valid file.');
-    }
-    // --- End Check ---
-
-    // --- Conditional Response: Link vs Base64 ---
-    if (responseFormat === 'base64') {
-        // --- Send Response (Base64) --- 
-        console.log(`[API] Reading file ${pathToUpload} for Base64 response...`);
-        const processedData = fs.readFileSync(pathToUpload);
-        const base64Data = processedData.toString('base64');
-        const responseFilename = path.basename(pathToUpload); // Get the actual final filename
-
-        console.log(`[API] Sending success response with Base64 data, filename: ${responseFilename}`);
-        res.statusCode = 200;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({
-            success: true,
-            files: [{ filename: responseFilename, data: base64Data }], // Use original files structure for UI
-        }));
-        // --- End Send Base64 Response ---
+    // --- Determine Final Path to Use (WAV path before potential MP3 conversion) --- 
+    let wavPathToProcess = null;
+    if (fs.existsSync(finalOutputPath)) {
+         wavPathToProcess = finalOutputPath;
+         console.log(`[API] Base WAV path selected (from Pass 2): ${finalOutputPath}`);
+    } else if (fs.existsSync(intermediateOutputPath)) {
+         console.warn("[API] finalOutputPath doesn't exist, using intermediateOutputPath as base WAV."); 
+         wavPathToProcess = intermediateOutputPath; // Fallback if Pass 2 didn't run/create file
     } else {
-        // --- Upload to S3 --- 
-        console.log(`[API] Uploading ${pathToUpload} to S3 bucket ${S3_BUCKET_NAME} as ${s3Key}...`);
-        const fileStream = fs.createReadStream(pathToUpload);
-        const uploadParams = {
-            Bucket: S3_BUCKET_NAME,
-            Key: s3Key,
-            Body: fileStream,
-            ContentType: 'audio/wav' 
-        };
-        try {
-            await s3Client.send(new PutObjectCommand(uploadParams));
-            console.log(`[API] Successfully uploaded to S3.`);
-        } catch (s3Error) {
-            console.error("[API] Error uploading to S3:", s3Error);
-            throw new Error("Failed to upload processed file to storage.");
-        }
-        // --- End Upload to S3 ---
-
-        // --- Send Response (S3 URL) --- 
-        const fileUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${s3Key}`;
-        console.log(`[API] Sending success response with S3 URL: ${fileUrl}`);
-        res.statusCode = 200;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({
-            success: true,
-            fileUrl: fileUrl,
-        }));
-        // --- End Send URL Response ---
+         console.warn("[API] Neither final nor intermediate WAV exist, falling back to original input path.");
+         wavPathToProcess = finalInputPath; // Note: This might not be WAV!
+         // Add check if input needs conversion for consistency? Or handle error?
+         // For now, assume if we reach here, input was likely compatible or error occurred
     }
+    
+    if (!wavPathToProcess || !fs.existsSync(wavPathToProcess)) {
+        console.error(`[API] Critical Error Before Conversion/Transcription: Base WAV path not found or invalid: ${wavPathToProcess}`);
+        throw new Error('Base audio file for processing not found.');
+    }
+    // --- End Base WAV Path Determination ---
+
+    // --- Prepare Input for Whisper (Always MP3) --- 
+    // Create a temporary MP3 for Whisper regardless of final export format
+    // Use a different temp filename to avoid conflicts if user also wants MP3 export
+    const whisperTempMp3Path = path.join(os.tmpdir(), `${baseOutputFilename}_whisper_temp.mp3`);
+    console.log(`[API Whisper Prep] Converting ${wavPathToProcess} to MP3 for Whisper: ${whisperTempMp3Path}...`);
+    try {
+        await new Promise((resolve, reject) => {
+            ffmpeg(wavPathToProcess) // Input is the final WAV before export formatting
+                .audioCodec('libmp3lame')
+                .audioBitrate('128k') // Lower bitrate might be fine for Whisper
+                .toFormat('mp3')
+                .on('error', (err, stdout, stderr) => {
+                     console.error('[API Whisper Prep MP3] FFmpeg Error:', err.message);
+                     console.error('[API Whisper Prep MP3] FFmpeg stderr:', stderr);
+                     reject(new Error(`Failed to convert audio to MP3 for Whisper: ${err.message}`));
+                })
+                .on('end', () => {
+                     console.log(`[API Whisper Prep MP3] Successfully converted to ${whisperTempMp3Path}`);
+                     resolve();
+                 })
+                 .save(whisperTempMp3Path);
+         });
+         // Conversion successful, set the path for Whisper input
+         whisperInputPath = whisperTempMp3Path;
+    } catch (whisperMp3Error) {
+         console.error("[API Whisper Prep MP3] Failed to convert to MP3 for Whisper. Transcription may fail or be skipped.", whisperMp3Error);
+         // Keep whisperInputPath as null
+    }
+    // --- End Whisper Input Prep ---
+
+    // --- Final Conversion to Export Format (Conditional) --- 
+    pathToUpload = wavPathToProcess; // Default to the determined WAV path for EXPORT
+    if (finalExportFormat === 'mp3') {
+        console.log(`[API Convert] Converting ${wavPathToProcess} to MP3...`);
+        try {
+            await new Promise((resolve, reject) => {
+                ffmpeg(wavPathToProcess)
+                    .audioCodec('libmp3lame')
+                    .audioBitrate('192k') // Example bitrate
+                    .toFormat('mp3')
+                    .on('error', (err, stdout, stderr) => {
+                         console.error('[API Convert MP3] FFmpeg Error:', err.message);
+                         console.error('[API Convert MP3] FFmpeg stderr:', stderr);
+                         reject(new Error(`Failed to convert audio to MP3: ${err.message}`));
+                    })
+                    .on('end', () => {
+                         console.log(`[API Convert MP3] Successfully converted to ${mp3OutputPath}`);
+                         resolve();
+                     })
+                     .save(mp3OutputPath);
+             });
+             // Conversion successful, update path for upload and transcription
+             pathToUpload = mp3OutputPath;
+             console.log(`[API Convert] Using MP3 path for subsequent steps: ${pathToUpload}`);
+        } catch (mp3Error) {
+             console.error("[API Convert MP3] Failed to convert to MP3. Uploading WAV instead.", mp3Error);
+             // Keep pathToUpload as the original WAV path
+             // Reset final key and content type back to WAV as fallback
+             finalS3Key = `${baseOutputFilename}_final.wav`;
+             finalContentType = 'audio/wav';
+             console.warn(`[API Convert MP3 Fallback] Reverted S3 Key to: ${finalS3Key}, ContentType: ${finalContentType}`);
+        }
+    }
+    // --- End Final Conversion ---
+
+    // --- Transcription (Optional) --- 
+    // Uses the dedicated `whisperInputPath` (MP3)
+    let s3SrtUrl = null;
+    if (transcribe) {
+        if (!openai) {
+            console.warn("[API Transcribe] OpenAI client not initialized. Skipping.");
+        // Check the dedicated whisperInputPath
+        } else if (!whisperInputPath || !fs.existsSync(whisperInputPath)) { 
+             console.error(`[API Transcribe] MP3 file for Whisper transcription not found or conversion failed: ${whisperInputPath}`);
+        } else {
+            console.log(`[API Transcribe] Starting transcription using MP3: ${whisperInputPath}...`);
+            try {
+                const transcription = await openai.audio.transcriptions.create({
+                    // Use whisperInputPath here
+                    file: fs.createReadStream(whisperInputPath), 
+                    model: "whisper-1",
+                    response_format: "verbose_json",
+                    timestamp_granularities: ["word"]
+                });
+                
+                // --- Log Raw Word Timestamps --- 
+                if (transcription.words && transcription.words.length > 0) {
+                    console.log("[API Transcribe Raw Words]:", JSON.stringify(transcription.words.slice(0, 10), null, 2)); // Log first 10 words
+                }
+                // -------------------------------
+
+                console.log("[API Transcribe] Transcription successful. Generating SRT...");
+                const srtContent = generateSrtFromWhisperWords(transcription.words);
+
+                if (srtContent) {
+                    fs.writeFileSync(srtOutputPath, srtContent);
+                    console.log(`[API Transcribe] SRT file generated: ${srtOutputPath}`);
+
+                    // Upload SRT to S3
+                    console.log(`[API Transcribe] Uploading SRT to S3 bucket: ${S3_BUCKET_NAME}, Key: ${s3SrtKey}`);
+                    const srtUploadCommand = new PutObjectCommand({
+                        Bucket: S3_BUCKET_NAME,
+                        Key: s3SrtKey,
+                        Body: fs.createReadStream(srtOutputPath),
+                        ContentType: 'text/plain' // Or application/x-subrip
+                    });
+                    await s3Client.send(srtUploadCommand);
+                    // Construct S3 URL for SRT (adjust region/bucket format if needed)
+                    s3SrtUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${s3SrtKey}`;
+                    console.log(`[API Transcribe] SRT uploaded successfully: ${s3SrtUrl}`);
+
+                } else {
+                    console.warn("[API Transcribe] Generated SRT content was empty (no words found or processed?). No SRT file saved or uploaded.");
+                }
+
+            } catch (transcriptionError) {
+                console.error("[API Transcribe] Error during transcription or SRT processing:", transcriptionError);
+                // Do not fail the request, just skip SRT generation
+            }
+        }
+    }
+    // --- End Transcription ---
+
+    // --- Output Handling --- 
+    // Uploads the file at `pathToUpload` (WAV or MP3)
+    console.log(`[API Upload] Uploading final audio from: ${pathToUpload}`);
+    
+    // --- Re-determine S3 Key and Content Type based on final path --- 
+    const finalExtension = path.extname(pathToUpload).substring(1); // e.g., 'wav' or 'mp3'
+    finalS3Key = `${baseOutputFilename}_final.${finalExtension}`;
+    finalContentType = finalExtension === 'mp3' ? 'audio/mpeg' : 'audio/wav';
+    console.log(`[API Upload] Determined final S3 Key: ${finalS3Key}, ContentType: ${finalContentType}`);
+    // --------------------------------------------------------------
+
+    // Check if S3 bucket is configured
+    if (!S3_BUCKET_NAME || !s3Client) {
+        console.error("[API] S3 Bucket Name or S3 Client is not configured. Cannot upload.");
+        throw new Error('S3 is not configured for upload.');
+    }
+
+    // Upload final audio to S3 using finalS3Key and finalContentType
+    console.log(`[API Upload] Uploading final audio to S3 bucket: ${S3_BUCKET_NAME}, Key: ${finalS3Key}`);
+    const audioUploadCommand = new PutObjectCommand({
+        Bucket: S3_BUCKET_NAME,
+        Key: finalS3Key, // Use the key with correct extension
+        Body: fs.createReadStream(pathToUpload),
+        ContentType: finalContentType // Use the correct content type
+    });
+    await s3Client.send(audioUploadCommand);
+    // Use finalS3Key to construct the URL
+    const s3AudioUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalS3Key}`;
+    console.log(`[API Upload] Final audio uploaded successfully: ${s3AudioUrl}`);
+    // --- End Output Handling ---
+
+    // --- Send Response ---
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'application/json');
+    const responsePayload = {
+        success: true,
+        audioUrl: s3AudioUrl
+    };
+    if (s3SrtUrl) {
+        responsePayload.srtUrl = s3SrtUrl; // Add SRT URL if generated
+    }
+    // --- Add logging before sending --- 
+    console.log("[API Response] Payload being sent:", JSON.stringify(responsePayload, null, 2));
+    // ---------------------------------
+    res.end(JSON.stringify(responsePayload));
+    console.log("[API] Request processed successfully. Response sent.");
+    // --- End Send Response ---
 
   } catch (processError) {
     // --- Main Processing Error Handling --- 
@@ -409,23 +648,27 @@ export default async function handler(req, res) {
 
   } finally {
       // --- Cleanup --- 
-      // Clean up intermediate file
-      if (intermediateOutputPath && fs.existsSync(intermediateOutputPath)) { // Added check if path exists
-          try { fs.unlinkSync(intermediateOutputPath); } catch(e){ console.error("Error deleting intermediate temp file:", e); }
-      }
-      // Clean up final output file (if second pass ran and it wasn't the intermediate)
-      if (finalOutputPath && pathToUpload === finalOutputPath && fs.existsSync(finalOutputPath)) {
-           try { fs.unlinkSync(finalOutputPath); } catch(e){ console.error("Error deleting final output temp file:", e); }
-      }
-      // Clean up the file we processed IF it wasn't the intermediate file (which is already handled)
-      // This covers the case where Pass 2 happened OR if Base64 response was sent using the final path
-      if (pathToUpload && pathToUpload !== intermediateOutputPath && fs.existsSync(pathToUpload)){
-           try { fs.unlinkSync(pathToUpload); } catch(e){ console.error("Error deleting processed temp file:", e); }
-      }
-      // Clean up input file ONLY if we downloaded it
-      if (downloadedTempPath && fs.existsSync(downloadedTempPath)) {
-          try { fs.unlinkSync(downloadedTempPath); } catch(e){ console.error("Error deleting downloaded temp file:", e); }
-      }
+      console.log("[API] Starting cleanup...");
+      // Add whisperInputPath (whisperTempMp3Path) to files to delete
+      const filesToDelete = [
+          downloadedTempPath, 
+          intermediateOutputPath, 
+          finalOutputPath, 
+          srtOutputPath, 
+          mp3OutputPath, // Final export MP3 (if created)
+          whisperInputPath // Temp MP3 for Whisper
+        ];
+      filesToDelete.forEach(filePath => {
+          if (filePath && fs.existsSync(filePath)) {
+              try {
+                  fs.unlinkSync(filePath);
+                  console.log(`[API Cleanup] Deleted: ${filePath}`);
+              } catch (unlinkErr) {
+                  console.error(`[API Cleanup] Error deleting file ${filePath}:`, unlinkErr);
+              }
+          }
+      });
+      console.log("[API] Cleanup finished.");
       // --- End Cleanup ---
   }
 }
