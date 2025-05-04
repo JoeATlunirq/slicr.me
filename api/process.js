@@ -641,7 +641,7 @@ export default async function handler(req, res) {
             let tracks = [];
             try {
                 // Fetch full track list from NocoDB via our other API
-                const listApiUrl = `http://localhost:${process.env.PORT || 3001}/api/music-tracks`;
+                const listApiUrl = `https://www.slicr.me/api/music-tracks`; // Use deployed URL
                 console.log(`[API Music Select] Calling list API: ${listApiUrl}`);
                 const trackListResponse = await axios.get(listApiUrl);
                 if (trackListResponse.data?.success && trackListResponse.data.tracks?.length > 0) {
