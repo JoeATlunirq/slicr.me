@@ -646,12 +646,21 @@ export default async function handler(req, res) {
                 const listApiUrl = `${baseUrl}/api/music-tracks`;
                 // ----------------------------------------------
 
-                // Fetch full track list from NocoDB via our other API
-                // const listApiUrl = `http://localhost:${process.env.PORT || 3001}/api/music-tracks`; // OLD Hardcoded URL
-                console.log(`[API Music Select] Calling list API: ${listApiUrl}`);
-                const trackListResponse = await axios.get(listApiUrl);
+                // --- Add Protection Bypass Header if secret is available ---
+                const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET; // Use the actual env var name
+                const requestHeaders = {};
+                if (bypassSecret) {
+                    requestHeaders['x-vercel-protection-bypass'] = bypassSecret;
+                    console.log("[API Music Select] Added Vercel protection bypass header.");
+                } else {
+                     console.warn("[API Music Select] Vercel bypass secret env var not found. Internal call might fail if protection is active.");
+                }
+                // --- End Header Addition ---
+
+                const trackListResponse = await axios.get(listApiUrl, { headers: requestHeaders }); // Pass headers here
+
                 if (trackListResponse.data?.success && trackListResponse.data.tracks?.length > 0) {
-                    tracks = trackListResponse.data.tracks; // Assign tracks ONLY on success
+                    tracks = trackListResponse.data.tracks; // Assign fetched tracks
                     console.log(`[API Music Select] Fetched ${tracks.length} tracks for selection.`);
                 } else {
                     console.warn("[API Music Select] Could not fetch or parse track list for auto-selection. Response:", trackListResponse.data);
