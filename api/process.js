@@ -627,14 +627,15 @@ export default async function handler(req, res) {
     let musicFileUrl = null;
     let musicOriginalDuration = null;
     let musicOriginalLufs = null;
-    
+    let tracks = []; // Declare tracks here, outside the 'if (addMusic)' block
+
     if (addMusic) {
         if (musicTrackId) { // Manual selection takes precedence
             finalMusicTrackId = musicTrackId;
             console.log(`[API Music Select] Using manually selected track ID: ${finalMusicTrackId}`);
         } else if (autoSelectMusic) {
             console.log("[API Music Select] Auto-select requested. Fetching track list...");
-            let tracks = []; // Initialize tracks as empty array
+            tracks = []; // Reset/ensure it's empty before attempting fetch
             try {
                  // --- Determine Base URL based on Environment ---
                 const isProduction = process.env.NODE_ENV === 'production';
@@ -657,7 +658,7 @@ export default async function handler(req, res) {
                 }
             } catch (listError) {
                 console.error("[API Music Select] Error fetching track list for auto-selection:", listError.message);
-                // Ensure tracks remains an empty array on error
+                // Ensure tracks remains [] on error
                 tracks = []; 
             }
 
@@ -737,8 +738,8 @@ Respond clearly with only the exact song title (no additional commentary or expl
         console.log("[API Music] No music track ID determined. Skipping music addition.");
     }
 
-    // Fallback to random if LLM failed or didn't find a match AND we successfully fetched tracks
-    if (addMusic && autoSelectMusic && !finalMusicTrackId && tracks.length > 0) { // Check addMusic/autoSelectMusic again
+    // Fallback to random: Now 'tracks' is accessible here
+    if (addMusic && autoSelectMusic && !finalMusicTrackId && tracks.length > 0) {
       console.log('[API Music Select] LLM selection failed or yielded no match. Falling back to random selection.');
       const randomIndex = Math.floor(Math.random() * tracks.length);
       finalMusicTrackId = tracks[randomIndex].id;
