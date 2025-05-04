@@ -1,7 +1,7 @@
 // Removed axios and process imports as NocoDB logic is now in musicService
 // import axios from 'axios';
 // import process from 'process';
-import { getAllMusicTracks } from './lib/musicService'; // Import the service function
+import { getAllMusicTracks } from './lib/musicService.js'; // Import the service function with .js extension
 
 // Removed NocoDB Config - Handled by service
 // const NOCODB_API_URL = process.env.NOCODB_API_URL;

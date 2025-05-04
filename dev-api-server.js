@@ -68,7 +68,7 @@ http.createServer(async (req, res) => {
 
 }).listen(PORT, () => {
     console.log(`[Dev API Server] Listening on port ${PORT}. Ready to route requests.`);
-});
+    });
 
 // Basic error handling for the server itself (e.g., port already in use)
 process.on('uncaughtException', (err) => {

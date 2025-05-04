@@ -10,7 +10,7 @@ import axios from 'axios';
 import ffprobeStatic from 'ffprobe-static';
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import OpenAI from 'openai';
-import { getAllMusicTracks, getMusicTrackById } from './lib/musicService'; // Import music service
+import { getAllMusicTracks, getMusicTrackById } from './lib/musicService.js'; // Import music service with .js extension
 
 // --- API Key Check --- 
 const EXPECTED_API_KEY = process.env.PROCESS_API_KEY;
