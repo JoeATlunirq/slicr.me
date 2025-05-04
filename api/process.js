@@ -4,13 +4,13 @@ import path from 'path';
 import os from 'os';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import ffmpeg from 'fluent-ffmpeg';
-import http from 'http';
 import { pathToFileURL } from 'url';
 import process from 'process';
 import axios from 'axios';
 import ffprobeStatic from 'ffprobe-static';
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import OpenAI from 'openai';
+import { getAllMusicTracks, getMusicTrackById } from './lib/musicService'; // Import music service
 
 // --- API Key Check --- 
 const EXPECTED_API_KEY = process.env.PROCESS_API_KEY;
@@ -139,13 +139,6 @@ function generateSrtFromWhisperWords(words) {
     return srtContent;
 }
 // --- End Helper Function ---
-
-// --- NocoDB Config --- 
-const NOCODB_API_URL = process.env.NOCODB_API_URL;
-const NOCODB_AUTH_TOKEN = process.env.NOCODB_AUTH_TOKEN;
-const MUSIC_TABLE_NAME = 'MushyMedia Songs'; // Keep for reference/logging if needed
-const NOCODB_MUSIC_TABLE_ID = 'mdfijlqr28f4ojj'; // The actual ID for API calls
-// ---------------------
 
 // --- FFmpeg Filter Constants --- 
 const DEFAULT_MUSIC_TARGET_LUFS = -18; // Target loudness for music normalization
@@ -363,10 +356,10 @@ export default async function handler(req, res) {
     // Music Params
     const addMusic = params.addMusic === true || params.addMusic === 'true';
     const autoSelectMusic = params.autoSelectMusic === true || params.autoSelectMusic === 'true';
-    let musicTrackId = addMusic ? (params.musicTrackId || null) : null; // Manual selection takes priority initially
-    const musicVolumeDb = addMusic ? parseFloat(params.musicVolumeDb ?? DEFAULT_MUSIC_DUCKING_DB) : DEFAULT_MUSIC_DUCKING_DB;
-    const musicTargetLufs = addMusic ? parseFloat(params.musicTargetLufs ?? DEFAULT_MUSIC_TARGET_LUFS) : DEFAULT_MUSIC_TARGET_LUFS;
-    const musicFadeoutThreshold = addMusic ? parseFloat(params.musicFadeoutThreshold ?? DEFAULT_MUSIC_FADEOUT_THRESHOLD_S) : DEFAULT_MUSIC_FADEOUT_THRESHOLD_S;
+    const musicTrackId = params.musicTrackId || null;
+    const musicVolumeDb = params.musicVolumeDb ? parseFloat(params.musicVolumeDb) : -23; // Default to -23 dBFS
+    const musicTargetLufs = params.musicTargetLufs ?? DEFAULT_MUSIC_TARGET_LUFS;
+    const musicFadeoutThreshold = params.musicFadeoutThreshold ?? DEFAULT_MUSIC_FADEOUT_THRESHOLD_S;
     console.log(`[API Params] Transcription: ${transcribe}, Export Format: ${finalExportFormat}, Add Music: ${addMusic}, AutoSelect: ${autoSelectMusic}, Track ID: ${musicTrackId}, Music Volume: ${musicVolumeDb}dB, Music Target LUFS: ${musicTargetLufs}, Fade Threshold: ${musicFadeoutThreshold}s`);
     // ---------------------------------------------------------
 
@@ -630,28 +623,21 @@ export default async function handler(req, res) {
             console.log("[API Music Select] Auto-select requested. Fetching track list...");
             let tracks = [];
             try {
-                // Fetch full track list from NocoDB via our other API
-                const listApiUrl = `http://localhost:${process.env.PORT || 3001}/api/music-tracks`;
-                console.log(`[API Music Select] Calling list API: ${listApiUrl}`);
-                const trackListResponse = await axios.get(listApiUrl);
-                if (trackListResponse.data?.success && trackListResponse.data.tracks?.length > 0) {
-                    tracks = trackListResponse.data.tracks;
-                    console.log(`[API Music Select] Fetched ${tracks.length} tracks for selection.`);
-                } else {
-                    console.warn("[API Music Select] Could not fetch or parse track list for auto-selection.");
-                }
+                // Use music service to get tracks
+                tracks = await getAllMusicTracks();
+                console.log(`[API Music Select] Fetched ${tracks.length} tracks for selection via service.`);
             } catch (listError) {
-                console.error("[API Music Select] Error fetching track list for auto-selection:", listError);
+                console.error("[API Music Select] Error fetching track list via service:", listError);
             }
 
             // --- LLM Selection Logic --- 
             // Attempt LLM if auto-select is on, OpenAI is ready, and we have a transcript
             if (openai && fullTranscriptText && tracks.length > 0) { 
-                console.log("[API Music Select] Attempting LLM-based selection (using script, expecting title)...");
+                console.log("[API Music Select LLM] Attempting LLM-based selection (using script, expecting title)...");
                 try {
                     // Format the track list for the new prompt style
                     const trackOptionsString = tracks.map((t, index) => 
-                        `${index + 1}. "${t.name}" — ${t.description || 'N/A'} [Mood: ${t.mood || 'N/A'}]`
+                        `${index + 1}. "${t.Title}" — ${t.Description || 'N/A'} [Mood: ${t.Mood || 'N/A'}]` // Use Title, Description, Mood from service object
                     ).join('\n');
                     
                     // Construct the new prompt
@@ -681,14 +667,14 @@ Respond clearly with only the exact song title (no additional commentary or expl
                         max_tokens: 50, // Allow slightly more tokens for potential longer titles
                     });
 
-                    const potentialTitle = llmResponse.choices[0]?.message?.content?.trim().replace(/^"|"$/g, ''); // Trim and remove surrounding quotes if any
+                    const potentialTitle = llmResponse.choices[0]?.message?.content?.trim().replace(/^"|"$/g, '');
                     console.log(`[API Music Select LLM] Received potential title: '${potentialTitle}'`);
 
                     // Validate if the response is a valid TITLE from our list
-                    const matchedTrack = tracks.find(t => t.name === potentialTitle);
+                    const matchedTrack = tracks.find(t => t.Title === potentialTitle);
                     
                     if (matchedTrack) {
-                        finalMusicTrackId = matchedTrack.id; // Get the ID from the matched track
+                        finalMusicTrackId = matchedTrack.Id; // Get the ID from the matched track
                         console.log(`[API Music Select LLM] Successfully matched title to track ID: ${finalMusicTrackId}`);
                     } else {
                         console.warn(`[API Music Select LLM] Response title '${potentialTitle}' does not match any available track titles. Skipping music addition.`);
@@ -730,28 +716,21 @@ Respond clearly with only the exact song title (no additional commentary or expl
       }
 
       try {
-        // 1. Fetch music track details from NocoDB
-        // const recordUrl = `${NOCODB_API_URL}/tables/${encodeURIComponent(MUSIC_TABLE_NAME)}/records?where=(Song ID,eq,${encodeURIComponent(finalMusicTrackId)})`; // Use where filter
-        // Construct URL using Table ID and where filter
-        const recordUrl = `${NOCODB_API_URL}/tables/${NOCODB_MUSIC_TABLE_ID}/records?where=(Song ID,eq,${encodeURIComponent(finalMusicTrackId)})`;
-        console.log(`[API Music] Fetching NocoDB record: ${recordUrl}`);
-        const headers = { 'xc-token': NOCODB_AUTH_TOKEN };
-        const nocoResponse = await axios.get(recordUrl, { headers });
-        
-        // NocoDB returns results in a list even with filter
-        const record = nocoResponse.data?.list?.[0]; 
-        if (!record) throw new Error(`Track ID ${finalMusicTrackId} not found in NocoDB.`);
+        // 1. Fetch music track details using the service
+        console.log(`[API Music] Fetching track details for ID ${finalMusicTrackId} via service...`);
+        const record = await getMusicTrackById(finalMusicTrackId);
+        if (!record) throw new Error(`Track ID ${finalMusicTrackId} not found.`);
 
-        musicFileUrl = record['Url (S3)'];
-        musicOriginalLufs = parseFloat(record['Lufs']); // Get LUFS
-        // Assuming Duration is stored as seconds or easily parseable string
-        musicOriginalDuration = parseFloat(record['Duration']); 
+        // Extract details from the service response object
+        musicFileUrl = record.S3_URL;
+        musicOriginalLufs = record.LUFS ? parseFloat(record.LUFS) : NaN; // Ensure LUFS is parsed
+        musicOriginalDuration = record.Duration ? parseFloat(record.Duration) : NaN; // Ensure Duration is parsed
 
-        if (!musicFileUrl) throw new Error(`'Url (S3)' field missing for track ${finalMusicTrackId}.`);
+        if (!musicFileUrl) throw new Error(`'S3_URL' field missing for track ${finalMusicTrackId}.`);
         if (isNaN(musicOriginalLufs)) console.warn(`[API Music] LUFS value missing or invalid for track ${finalMusicTrackId}. Normalization might be skipped or fail.`);
         if (isNaN(musicOriginalDuration)) throw new Error(`'Duration' field missing or invalid for track ${finalMusicTrackId}.`);
 
-        console.log(`[API Music] Details: URL=${musicFileUrl}, LUFS=${musicOriginalLufs}, Duration=${musicOriginalDuration}s`);
+        console.log(`[API Music] Details from service: URL=${musicFileUrl}, LUFS=${musicOriginalLufs}, Duration=${musicOriginalDuration}s`);
 
         // 2. Download music file
         const musicFileExtension = path.extname(new URL(musicFileUrl).pathname) || '.mp3';

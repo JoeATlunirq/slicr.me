@@ -59,8 +59,34 @@ This project is built with:
 - React
 - shadcn-ui
 - Tailwind CSS
+- Node.js (for API routes)
+- FFmpeg (via `@ffmpeg-installer/ffmpeg` and `fluent-ffmpeg`)
+- AWS S3 (via `@aws-sdk/client-s3`)
+- OpenAI API (via `openai`)
+- NocoDB (via `axios`)
+- Wavesurfer.js
 
 ## How can I deploy this project?
+
+This project is configured for deployment on [Vercel](https://vercel.com/).
+
+### Vercel Deployment:
+
+1.  **Connect Repository:** Connect your Git repository (GitHub, GitLab, Bitbucket) to Vercel.
+2.  **Framework Preset:** Vercel should automatically detect Vite.
+3.  **Build Command:** Ensure Vercel uses `vite build` or `bun run build`.
+4.  **Output Directory:** Ensure Vercel uses `dist`.
+5.  **Install Command:** Ensure Vercel uses `bun install` or `npm install`.
+6.  **Environment Variables:** Configure the following environment variables in your Vercel project settings:
+    *   `AWS_ACCESS_KEY_ID`: Your AWS access key ID.
+    *   `AWS_SECRET_ACCESS_KEY`: Your AWS secret access key.
+    *   `AWS_REGION`: The AWS region for your S3 bucket (e.g., `us-east-1`).
+    *   `S3_BUCKET_NAME`: The name of your AWS S3 bucket.
+    *   `OPENAI_API_KEY`: Your OpenAI API key (required for transcription and AI music selection).
+    *   `PROCESS_API_KEY`: A secret key you define for authenticating direct API calls (not from the UI).
+    *   `NOCODB_API_URL`: The base URL for your NocoDB API (e.g., `https://your-nocodb.example.com/api/v1/db/data/v1/`).
+    *   `NOCODB_AUTH_TOKEN`: Your NocoDB authentication token (`xc-token`).
+    *   `VITE_SLICR_API_KEY`: A **public** key used by the frontend UI to identify itself (can be the same as `PROCESS_API_KEY` or different, but must be prefixed with `VITE_`). The backend ignores this key if the request comes from an allowed UI origin.
 
 Simply open [Lovable](https://lovable.dev/projects/5a0352e7-70c0-4069-8506-97ddfb22d005) and click on Share -> Publish.
 
