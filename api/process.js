@@ -634,24 +634,35 @@ export default async function handler(req, res) {
             console.log(`[API Music Select] Using manually selected track ID: ${finalMusicTrackId}`);
         } else if (autoSelectMusic) {
             console.log("[API Music Select] Auto-select requested. Fetching track list...");
-            let tracks = [];
+            let tracks = []; // Initialize tracks as empty array
             try {
+                 // --- Determine Base URL based on Environment ---
+                const isProduction = process.env.NODE_ENV === 'production';
+                // Use VERCEL_URL if available (preferred for previews), fallback to hardcoded prod URL, else use localhost
+                const baseUrl = isProduction 
+                    ? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://www.slicr.me') 
+                    : `http://localhost:${process.env.PORT || 3001}`; // Use PORT env var if set locally
+                const listApiUrl = `${baseUrl}/api/music-tracks`;
+                // ----------------------------------------------
+
                 // Fetch full track list from NocoDB via our other API
-                const listApiUrl = `http://localhost:${process.env.PORT || 3001}/api/music-tracks`;
+                // const listApiUrl = `http://localhost:${process.env.PORT || 3001}/api/music-tracks`; // OLD Hardcoded URL
                 console.log(`[API Music Select] Calling list API: ${listApiUrl}`);
                 const trackListResponse = await axios.get(listApiUrl);
                 if (trackListResponse.data?.success && trackListResponse.data.tracks?.length > 0) {
-                    tracks = trackListResponse.data.tracks;
+                    tracks = trackListResponse.data.tracks; // Assign tracks ONLY on success
                     console.log(`[API Music Select] Fetched ${tracks.length} tracks for selection.`);
                 } else {
-                    console.warn("[API Music Select] Could not fetch or parse track list for auto-selection.");
+                    console.warn("[API Music Select] Could not fetch or parse track list for auto-selection. Response:", trackListResponse.data);
                 }
             } catch (listError) {
-                console.error("[API Music Select] Error fetching track list for auto-selection:", listError);
+                console.error("[API Music Select] Error fetching track list for auto-selection:", listError.message);
+                // Ensure tracks remains an empty array on error
+                tracks = []; 
             }
 
             // --- LLM Selection Logic --- 
-            // Attempt LLM if auto-select is on, OpenAI is ready, and we have a transcript
+            // Attempt LLM if auto-select is on, OpenAI is ready, and we have a transcript AND tracks
             if (openai && fullTranscriptText && tracks.length > 0) { 
                 console.log("[API Music Select] Attempting LLM-based selection (using script, expecting title)...");
                 try {
@@ -726,12 +737,12 @@ Respond clearly with only the exact song title (no additional commentary or expl
         console.log("[API Music] No music track ID determined. Skipping music addition.");
     }
 
-    // Fallback to random if LLM failed or didn't find a match
-    if (!musicTrackId && tracks.length > 0) {
+    // Fallback to random if LLM failed or didn't find a match AND we successfully fetched tracks
+    if (addMusic && autoSelectMusic && !finalMusicTrackId && tracks.length > 0) { // Check addMusic/autoSelectMusic again
       console.log('[API Music Select] LLM selection failed or yielded no match. Falling back to random selection.');
       const randomIndex = Math.floor(Math.random() * tracks.length);
-      musicTrackId = tracks[randomIndex].id;
-      console.log(`[API Music Select] Randomly selected track ID: ${musicTrackId}`);
+      finalMusicTrackId = tracks[randomIndex].id;
+      console.log(`[API Music Select] Randomly selected track ID: ${finalMusicTrackId}`);
     }
     // --- End Determine Music Track ID ---
 
