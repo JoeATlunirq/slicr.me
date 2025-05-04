@@ -14,6 +14,12 @@ import OpenAI from 'openai';
 
 // --- API Key Check --- 
 const EXPECTED_API_KEY = process.env.PROCESS_API_KEY;
+// Define allowed origins for UI requests (add your production domain here)
+const ALLOWED_UI_ORIGINS = [
+  'http://localhost:8080', // Vite default dev server
+  'https://www.slicr.me'   // Your production domain
+  // Add other potential origins if needed (e.g., staging)
+];
 // ---------------------
 
 // --- AWS S3 Configuration --- 
@@ -137,23 +143,35 @@ function generateSrtFromWhisperWords(words) {
 // Export default handler function
 export default async function handler(req, res) {
 
-  // --- API Key Verification --- 
-  if (!EXPECTED_API_KEY) {
-    console.error("[API Auth] CRITICAL: PROCESS_API_KEY environment variable not set on server.");
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ success: false, error: 'Server configuration error.' }));
-    return;
+  // --- Origin Check / API Key Verification --- 
+  const requestOrigin = req.headers['origin']; // Get Origin header
+  console.log(`[API Auth] Request Origin: ${requestOrigin}`);
+
+  // Check if origin is one of the allowed UI origins
+  if (requestOrigin && ALLOWED_UI_ORIGINS.includes(requestOrigin)) {
+    // Request is likely from the UI, bypass API key check for now
+    console.log(`[API Auth] Origin is allowed UI origin. Skipping API Key check.`);
+  } else {
+    // Origin is not recognized UI or missing - treat as API call, require key
+    console.log(`[API Auth] Origin not recognized or missing. Enforcing API Key check.`);
+    if (!EXPECTED_API_KEY) {
+      console.error("[API Auth] CRITICAL: PROCESS_API_KEY environment variable not set on server.");
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ success: false, error: 'Server configuration error.' }));
+      return;
+    }
+    const providedApiKey = req.headers['x-api-key']; 
+    if (providedApiKey !== EXPECTED_API_KEY) {
+      console.warn(`[API Auth] Failed API Key attempt. Provided: ${providedApiKey}`);
+      res.statusCode = 403; // Forbidden
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ success: false, error: 'Invalid API Key.' }));
+      return;
+    }
+    console.log(`[API Auth] API Key validated successfully.`);
   }
-  const providedApiKey = req.headers['x-api-key']; // Read from custom header (lowercase)
-  if (providedApiKey !== EXPECTED_API_KEY) {
-    console.warn(`[API Auth] Failed API Key attempt. Provided: ${providedApiKey}`);
-    res.statusCode = 403; // Forbidden
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ success: false, error: 'Invalid API Key.' }));
-    return;
-  }
-  // --- End API Key Verification ---
+  // --- End Origin Check / API Key Verification ---
 
   // Re-add method check
   if (req.method !== 'POST') {

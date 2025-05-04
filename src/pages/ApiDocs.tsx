@@ -130,8 +130,20 @@ fetch('https://www.slicr.me/api/process', {
             <CardTitle>Authentication</CardTitle>
           </CardHeader>
           <CardContent>
-             <p>Requests to the <code className="bg-muted px-1 rounded">/api/process</code> endpoint must include a valid API key in the <code className="bg-muted px-1 rounded">X-API-Key</code> HTTP header.</p>
-             <p className="mt-2 text-sm text-muted-foreground">Please contact the administrator if you require an API key.</p>
+             <p>
+               Requests to the <code className="bg-muted px-1 rounded">/api/process</code> endpoint require authentication, handled differently based on the request source:
+             </p>
+             <ul className="list-disc list-inside mt-2 space-y-1">
+                <li>
+                    <strong>Requests from the official UI</strong> (e.g., <code className="bg-muted px-1 rounded">https://www.slicr.me</code>): Authentication is handled automatically based on the request origin. No explicit API key is needed when using the web application directly.
+                </li>
+                <li>
+                    <strong>Direct API Calls</strong> (e.g., from servers, scripts, tools like cURL/Postman): These requests MUST include a valid API key in the <code className="bg-muted px-1 rounded">X-API-Key</code> HTTP header.
+                </li>
+             </ul>
+             <p className="mt-3 text-sm text-muted-foreground">
+               Please contact the administrator if you require an API key for direct integration.
+             </p>
           </CardContent>
         </Card>
 
