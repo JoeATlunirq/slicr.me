@@ -367,17 +367,7 @@ export default async function handler(req, res) {
     const musicVolumeDb = addMusic ? parseFloat(params.musicVolumeDb ?? DEFAULT_MUSIC_DUCKING_DB) : DEFAULT_MUSIC_DUCKING_DB;
     const musicTargetLufs = addMusic ? parseFloat(params.musicTargetLufs ?? DEFAULT_MUSIC_TARGET_LUFS) : DEFAULT_MUSIC_TARGET_LUFS;
     const musicFadeoutThreshold = addMusic ? parseFloat(params.musicFadeoutThreshold ?? DEFAULT_MUSIC_FADEOUT_THRESHOLD_S) : DEFAULT_MUSIC_FADEOUT_THRESHOLD_S;
-
-    // New Music Parameters:
-    // musicStartTime (Optional<number>): Start time (in seconds) within the music track to begin playback. Defaults to 0.
-    const musicStartTime = addMusic ? parseFloat(params.musicStartTime ?? 0) : 0;
-    // musicEndTime (Optional<number>): End time (in seconds) within the music track to stop playback. Defaults to the music track's full duration if not specified.
-    const musicEndTime = addMusic ? (params.musicEndTime ? parseFloat(params.musicEndTime) : null) : null;
-    // musicVolumeLevel (Optional<number>): Volume level multiplier for the music track (0.0 to 1.0). Defaults to 0.1 (10% volume).
-    const musicVolumeLevel = addMusic ? parseFloat(params.musicVolumeLevel ?? 0.1) : 0.1;
-
     console.log(`[API Params] Transcription: ${transcribe}, Export Format: ${finalExportFormat}, Add Music: ${addMusic}, AutoSelect: ${autoSelectMusic}, Track ID: ${musicTrackId}, Music Volume: ${musicVolumeDb}dB, Music Target LUFS: ${musicTargetLufs}, Fade Threshold: ${musicFadeoutThreshold}s`);
-    console.log(`[API Params Music Timing] StartTime: ${musicStartTime}s, EndTime: ${musicEndTime !== null ? musicEndTime + 's' : 'Full Duration'}, VolumeLevel: ${musicVolumeLevel}`);
     // ---------------------------------------------------------
 
     // --- FFmpeg Pass 1: Silence Removal --- 
@@ -641,7 +631,7 @@ export default async function handler(req, res) {
             let tracks = [];
             try {
                 // Fetch full track list from NocoDB via our other API
-                const listApiUrl = `https://www.slicr.me/api/music-tracks`; // Use deployed URL
+                const listApiUrl = `http://localhost:${process.env.PORT || 3001}/api/music-tracks`;
                 console.log(`[API Music Select] Calling list API: ${listApiUrl}`);
                 const trackListResponse = await axios.get(listApiUrl);
                 if (trackListResponse.data?.success && trackListResponse.data.tracks?.length > 0) {
@@ -825,71 +815,52 @@ Respond clearly with only the exact song title (no additional commentary or expl
             console.log(`[API Music Fade] Music (${musicOriginalDuration}s) is not shorter than VO (${voDuration}s). Skipping fade-out.`);
         }
 
-        // 5. Trim Music Segment based on start/end times and match VO duration
+        // 5. Trim Music (input is normalized/faded path)
         trimmedMusicPath = path.join(os.tmpdir(), `${baseOutputFilename}_music_trim.wav`); // Output trimmed as WAV
-        console.log(`[API Music Trim] Processing music segment (Input: ${musicPathBeforeTrim}, Start: ${musicStartTime}s, End: ${musicEndTime ? musicEndTime + 's' : 'VO Duration'}) -> ${trimmedMusicPath}...`);
-        
+        console.log(`[API Music Trim] Trimming music (${musicPathBeforeTrim}) to VO duration ${voDuration}s -> ${trimmedMusicPath}...`);
         await new Promise((resolve, reject) => {
-            let command = ffmpeg(musicPathBeforeTrim); // Use the potentially faded path
-            
-            // Apply start time
-            command = command.setStartTime(musicStartTime);
-            console.log(`[API Music Trim] Set start time: ${musicStartTime}s`);
-
-            let segmentDuration = null;
-            // Calculate duration if valid end time is provided
-            if (musicEndTime !== null && musicEndTime > musicStartTime) {
-                segmentDuration = musicEndTime - musicStartTime;
-                console.log(`[API Music Trim] Using specified end time. Segment duration: ${segmentDuration.toFixed(4)}s`);
-                command = command.setDuration(segmentDuration);
-            }
-
-            // If no valid segment duration from end time, trim to VO duration
-            // OR if segment duration is LONGER than voDuration, also trim to voDuration
-            if (segmentDuration === null || segmentDuration > voDuration) {
-                 if (segmentDuration !== null) {
-                    console.log(`[API Music Trim] Specified segment duration (${segmentDuration.toFixed(4)}s) > VO duration (${voDuration.toFixed(4)}s). Trimming final output to VO duration.`);
-                 } else {
-                    console.log(`[API Music Trim] No valid end time specified. Trimming final output to VO duration: ${voDuration.toFixed(4)}s`);
-                 }
-                 // Apply VO duration *if* trimming is needed
-                 command = command.setDuration(voDuration); 
-            }
-            
-            command
-                // Re-encode to ensure format consistency after trimming/segmenting
-                .outputOptions('-c:a pcm_s16le')
-                .toFormat('wav')
-                .on('error', reject)
-                .on('end', resolve)
-                .save(trimmedMusicPath); // Save the final trimmed music
+           ffmpeg(musicPathBeforeTrim) // Use the potentially faded path
+              .setStartTime(0)
+              .setDuration(voDuration)
+              // Re-encode to ensure format consistency after potential fade
+              .outputOptions('-c:a pcm_s16le') 
+              .toFormat('wav')
+              .on('error', reject)
+              .on('end', resolve)
+              .save(trimmedMusicPath); // Save the final trimmed music
         });
         console.log(`[API Music Trim] Music trimmed.`);
 
-        // 6. Apply Final Volume Adjustment to Trimmed Music
+        // 6. Apply Final Volume Adjustment to Trimmed Music (Temporarily Bypassed for Debugging)
+        /*
         adjustedMusicPath = path.join(os.tmpdir(), `${baseOutputFilename}_music_adj.wav`);
-        console.log(`[API Music Volume] Applying final volume adjustment (Level: ${musicVolumeLevel}) -> ${adjustedMusicPath}...`);
+        console.log(`[API Music Volume] Applying final volume adjustment (${musicVolumeDb}dB) -> ${adjustedMusicPath}...`);
         await new Promise((resolve, reject) => {
             ffmpeg(trimmedMusicPath) // Input is the trimmed music
-                .audioFilter(`volume=volume=${musicVolumeLevel}`)
-                .outputOptions('-c:a pcm_s16le')
+                .audioFilter(`volume=${musicVolumeDb}dB`)
+                .outputOptions('-c:a pcm_s16le') 
                 .toFormat('wav')
                 .on('error', (err) => reject(new Error(`Music volume adjustment failed: ${err.message}`)))
                 .on('end', resolve)
                 .save(adjustedMusicPath);
         });
         console.log(`[API Music Volume] Music volume adjusted.`);
-        
-        // Use the volume-adjusted path for mixing
-        const musicPathForMixing = adjustedMusicPath;
-
+        */
+        console.log("[API Music Volume DEBUG] Bypassing final volume adjustment step.");
+        // Use trimmed path directly for mixing in this debug step
+        // const musicPathForMixing = trimmedMusicPath; 
+        // --- DEBUG STEP 2: Use ORIGINAL downloaded music for mixing ---
+        const musicPathForMixing = tempMusicPath; 
+        console.log("[API Music Mix DEBUG] Using ORIGINAL downloaded music for mix.");
+ 
         // 7. Mix VO and Volume-Adjusted Music (Simple Mix)
         mixedOutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_mixed.wav`);
-        console.log(`[API Music Mix] Mixing VO (${wavPathToProcess}) and Adjusted Music (${musicPathForMixing}) -> ${mixedOutputPath}...`);
+        console.log(`[API Music Mix DEBUG] Mixing VO and ORIGINAL music -> ${mixedOutputPath}...`);
         await new Promise((resolve, reject) => {
             ffmpeg()
               .input(wavPathToProcess)       // Input 0: Voice Over
-              .input(musicPathForMixing)    // Input 1: Volume-adjusted music
+              .input(musicPathForMixing)    // Input 1: Using trimmed music directly for debug
+              // Simple mix, duration determined by the first input (VO)
               .complexFilter(`[0:a][1:a]amix=inputs=2:duration=first[out]`)
               .map('[out]')
               .audioCodec('pcm_s16le') // Standard WAV codec

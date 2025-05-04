@@ -12,19 +12,19 @@ curl -X POST \\
   https://www.slicr.me/api/process \\
   -H 'X-API-Key: YOUR_API_KEY_HERE' \\
   -F 'audioFile=@/path/to/your/audio.wav' \\
-  -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "targetDuration": 60.0, "transcribe": true, "exportFormat": "mp3", "addMusic": true, "musicTrackId": "YOUR_TRACK_ID", "musicVolumeLevel": 0.15}'
+  -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "targetDuration": 60.0, "transcribe": true, "exportFormat": "mp3"}'
 
-# OR using URL and Auto-Select Music:
+# OR using URL:
 curl -X POST \\
   https://www.slicr.me/api/process \\
   -H 'X-API-Key: YOUR_API_KEY_HERE' \\
   -F 'audioUrl=https://example.com/audio.mp3' \\
-  -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "targetDuration": null, "transcribe": true, "exportFormat": "wav", "addMusic": true, "autoSelectMusic": true, "musicVolumeLevel": 0.1}'`;
+  -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "targetDuration": 60.0, "transcribe": false, "exportFormat": "wav"}'`;
 
   const jsExample = `// Replace 'YOUR_API_KEY_HERE' with the key from your .env (VITE_SLICR_API_KEY)
 const apiKey = 'YOUR_API_KEY_HERE'; 
 
-// Option 1: Using File object with Manual Music Selection
+// Option 1: Using File object
 const audioFile = /* get your File object */;
 const paramsFile = {
     thresholdDb: -40,       
@@ -33,17 +33,13 @@ const paramsFile = {
     rightPadding: 0.05,    
     targetDuration: 60.0,   // Optional: Target duration > 0. Speeds up only.
     transcribe: true,       // Optional: Set to true to generate SRT subtitles.
-    exportFormat: "mp3",    // Optional: 'wav' or 'mp3'. Default is 'wav'.
-    addMusic: true,         // Optional: Enable background music. (Default: false)
-    musicTrackId: "YOUR_TRACK_ID", // Optional: NocoDB ID of the music track. Required if addMusic=true and autoSelectMusic=false.
-    // autoSelectMusic: false, // Default if not provided when addMusic=true
-    musicVolumeLevel: 0.15  // Optional: Music volume multiplier (0.0 to 1.0). Default: 0.1
+    exportFormat: "mp3"     // Optional: 'wav' or 'mp3'. Default is 'wav'.
 };
 const formDataFile = new FormData();
 formDataFile.append('audioFile', audioFile);
 formDataFile.append('params', JSON.stringify(paramsFile));
 
-// Option 2: Using URL with Auto Music Selection
+// Option 2: Using URL
 const audioUrl = "https://example.com/audio.mp3";
 const paramsUrl = {
     thresholdDb: -40,       
@@ -51,12 +47,8 @@ const paramsUrl = {
     leftPadding: 0.05,      
     rightPadding: 0.05,    
     targetDuration: null,   // Omit or null for no speed change.
-    transcribe: true,       // Need transcription for auto-select context.
-    exportFormat: "wav",    // Default
-    addMusic: true,         // Enable background music.
-    autoSelectMusic: true,  // Optional: Use AI to select music based on transcript. (Default: false)
-    // musicTrackId: null,  // Omit if autoSelectMusic=true
-    musicVolumeLevel: 0.1   // Optional: Music volume multiplier (0.0 to 1.0). Default: 0.1
+    transcribe: false,      // Default
+    exportFormat: "wav"     // Default
 };
 const formDataUrl = new FormData();
 formDataUrl.append('audioUrl', audioUrl);
@@ -236,34 +228,6 @@ fetch('https://www.slicr.me/api/process', {
                    <td className="border border-border p-2">String</td>
                    <td className="border border-border p-2">Desired output format for the audio file. Options: 'wav' (default) or 'mp3'.</td>
                    <td className="border border-border p-2"><code className="font-mono">"mp3"</code></td>
-                 </tr>
-                 {/* --- Music Parameters --- */}
-                 <tr>
-                   <td className="border border-border p-2 font-semibold bg-muted/50" colSpan={4}>Music Parameters (Optional)</td>
-                 </tr>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">addMusic</code></td>
-                   <td className="border border-border p-2">Boolean</td>
-                   <td className="border border-border p-2">Set to true to enable adding background music. (Default: false)</td>
-                   <td className="border border-border p-2"><code className="font-mono">true</code></td>
-                 </tr>
-                  <tr>
-                   <td className="border border-border p-2"><code className="font-mono">autoSelectMusic</code></td>
-                   <td className="border border-border p-2">Boolean</td>
-                   <td className="border border-border p-2">If true and <code className='font-mono'>addMusic</code> is true, attempts to use AI (requires transcription) to select a suitable track from the NocoDB library. Overrides <code className='font-mono'>musicTrackId</code> if both are present. (Default: false)</td>
-                   <td className="border border-border p-2"><code className="font-mono">true</code></td>
-                 </tr>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">musicTrackId</code></td>
-                   <td className="border border-border p-2">String | null</td>
-                   <td className="border border-border p-2">The unique ID (from NocoDB) of the music track to use. Required if <code className='font-mono'>addMusic</code> is true and <code className='font-mono'>autoSelectMusic</code> is false.</td>
-                   <td className="border border-border p-2"><code className="font-mono">"YOUR_TRACK_ID"</code></td>
-                 </tr>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">musicVolumeLevel</code></td>
-                   <td className="border border-border p-2">Number</td>
-                   <td className="border border-border p-2">Volume multiplier for the background music track. Range: 0.0 (silent) to 1.0 (original volume). (Default: 0.1)</td>
-                   <td className="border border-border p-2"><code className="font-mono">0.15</code></td>
                  </tr>
                </tbody>
              </table>
