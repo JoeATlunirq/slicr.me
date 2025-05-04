@@ -4,7 +4,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { Scissors, Download, Settings, ArrowLeft, Upload, RotateCcw, Loader2, Music, X } from "lucide-react";
+import { Scissors, Download, Settings, ArrowLeft, Upload, RotateCcw, Loader2, Music } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast, useToast } from "@/hooks/use-toast";
 import Timeline from "./Timeline";
@@ -13,9 +13,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import axios from "axios";
-
-// Import Tab components
-import MusicTab from './tabs/MusicTab';
 
 // --- Define Ref Handle Type for Timeline ---
 export interface TimelineHandle {
@@ -108,22 +105,12 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
 
   // --- State for Music --- 
   const [addMusicEnabled, setAddMusicEnabled] = useState<boolean>(false);
-  // Define a clearer type for fetched tracks
-  interface FetchedMusicTrack {
-    Id: number | string; // NocoDB might use number or string
-    Title: string;
-    Description?: string;
-    Mood?: string;
-    LUFS?: number;      // Added from NocoDB fetch
-    Duration?: number; // Added from NocoDB fetch
-    S3_URL?: string;   // Added from NocoDB fetch
-  }
-  const [availableMusicTracks, setAvailableMusicTracks] = useState<FetchedMusicTrack[]>([]);
-  const [selectedMusicTrackId, setSelectedMusicTrackId] = useState<string | null>(null); // Allow null
-  const [musicVolumeDb, setMusicVolumeDb] = useState<number>(-23); // Default to -23, single number state
+  const [availableMusicTracks, setAvailableMusicTracks] = useState<{id: string; name: string; description?: string; mood?: string; lufs?: number; duration?: number}[]>([]);
+  const [selectedMusicTrackId, setSelectedMusicTrackId] = useState<string | null>(null);
+  const [musicVolumeDb, setMusicVolumeDb] = useState<number[]>([-18]);
   const [isLoadingMusic, setIsLoadingMusic] = useState<boolean>(false);
   const [autoSelectMusic, setAutoSelectMusic] = useState<boolean>(false);
-  const [musicTracksError, setMusicTracksError] = useState<Error | null>(null); // State for fetch error
+  // -----------------------
 
   // --- Recalculate Processed Duration --- 
   // This needs access to *all* deleted regions (manual+auto), which is currently
@@ -542,11 +529,15 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
         exportAsSections: exportAsSections,
         transcribe: transcribeEnabled,
         exportFormat: exportFormat,
-        // Add music params
-        addMusic: addMusicEnabled,
-        autoSelectMusic: addMusicEnabled ? autoSelectMusic : undefined,
-        musicTrackId: addMusicEnabled && !autoSelectMusic ? (selectedMusicTrackId || undefined) : undefined,
-        musicVolumeDb: addMusicEnabled ? musicVolumeDb : undefined,
+        // --- Music Parameters (Improved Naming) ---
+        // Boolean indicating if music should be added
+        addBackgroundMusic: addMusicEnabled,
+        // Boolean indicating if the server should auto-select a track (only relevant if addBackgroundMusic is true)
+        autoSelectMusicTrack: addMusicEnabled ? autoSelectMusic : undefined,
+        // The ID of the manually selected track (only relevant if addBackgroundMusic is true and autoSelectMusicTrack is false)
+        selectedMusicTrackId: addMusicEnabled && !autoSelectMusic ? (selectedMusicTrackId || undefined) : undefined,
+        // The target volume level for the music ducking in dB (only relevant if addBackgroundMusic is true)
+        musicVolumeDb: addMusicEnabled ? musicVolumeDb[0] : undefined,
     };
 
     const formData = new FormData();
@@ -570,7 +561,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
       toast({ title: "Configuration Error", description: "API Key is missing in frontend configuration.", variant: "destructive" });
       setIsExportProcessing(false);
       setExportStatusMessage("Configuration Error");
-      return;
+        return;
     }
 
     try {
@@ -615,7 +606,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
       } catch (fetchError) {
           // Catch errors from fetch() itself or response processing
           console.error("[API Export] Error fetching or processing response:", fetchError);
-          setIsExportProcessing(false); // Stop loading indicator
+      setIsExportProcessing(false); // Stop loading indicator
           toast({ title: "Network/Response Error", description: `Failed to communicate with server: ${fetchError instanceof Error ? fetchError.message : 'Unknown network error'}`, variant: "destructive" });
           return; // Exit the function early
       }
@@ -648,7 +639,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
               const toastInstance = toast({ title: "Downloading...", description: `Fetching ${defaultFilename}...` });
               downloadToastId = toastInstance?.id; // Use optional chaining
               const response = await fetch(url);
-              if (!response.ok) {
+      if (!response.ok) {
                   throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
               }
               const blob = await response.blob();
@@ -677,7 +668,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
               // Dismiss using the hook's dismiss function
               if (typeof downloadToastId === 'string') {
                  dismissToast(downloadToastId);
-              }
+      }
               toast({ title: "Download Error", description: `Could not download ${defaultFilename}. ${error instanceof Error ? error.message : 'Network error'}`, variant: "destructive" });
               return false;
           }
@@ -1026,26 +1017,25 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
   useEffect(() => {
     const fetchMusic = async () => {
       setIsLoadingMusic(true);
-      setMusicTracksError(null); // Reset error on new fetch
       try {
         console.log("[Music Fetch] Fetching available tracks...");
         const response = await axios.get('/api/music-tracks');
         if (response.data?.success && Array.isArray(response.data.tracks)) {
           console.log("[Music Fetch] Received tracks:", response.data.tracks);
           setAvailableMusicTracks(response.data.tracks);
+          // Optionally set a default selection
+          // if (response.data.tracks.length > 0 && !selectedMusicTrackId) {
+          //   setSelectedMusicTrackId(response.data.tracks[0].id);
+          // }
         } else {
           console.error("[Music Fetch] Invalid response format from /api/music-tracks");
           setAvailableMusicTracks([]);
-          const error = new Error("Could not load available music tracks due to invalid format.");
-          setMusicTracksError(error);
-          toast({ title: "Music Error", description: error.message, variant: "destructive" });
+          toast({ title: "Music Error", description: "Could not load available music tracks.", variant: "destructive" });
         }
-      } catch (error: any) {
+      } catch (error) {
         console.error("[Music Fetch] Error fetching music tracks:", error);
         setAvailableMusicTracks([]);
-        const fetchError = new Error(error.message || "Failed to connect to music library.");
-        setMusicTracksError(fetchError);
-        toast({ title: "Music Error", description: fetchError.message, variant: "destructive" });
+        toast({ title: "Music Error", description: "Failed to connect to music library.", variant: "destructive" });
       } finally {
         setIsLoadingMusic(false);
       }
@@ -1054,7 +1044,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
     fetchMusic();
     // Run only once on component mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Removed toast dependency
+  }, []);
   // ------------------------------------
 
   // --- Effect to handle auto-select changes --- 
@@ -1156,232 +1146,387 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                 {/* Silence Settings Tab Content */}
                 <TabsContent value="silence" className="p-4">
                   <div className="space-y-6">
-                    {/* Threshold */}
-                    <div>
-                      <div className="flex justify-between mb-1">
-                        <Label htmlFor="threshold" className="text-xs font-medium">Silence Threshold</Label>
-                        <span className="text-xs font-mono">{thresholdDb[0]} dB</span>
-                      </div>
-                      <Slider
-                        id="threshold"
-                        value={thresholdDb}
-                        onValueChange={setThresholdDb}
-                        max={0}
-                        min={-60}
-                        step={1}
-                        disabled={!hasFile}
-                      />
-                      <p className="text-xs text-muted-foreground mt-1">Audio below this level is considered silence.</p>
-                    </div>
-
-                    {/* Min Duration */}
-                    <div>
-                      <div className="flex justify-between mb-1">
-                        <Label htmlFor="min-duration" className="text-xs font-medium">Minimum Silence Duration</Label>
-                        <span className="text-xs font-mono">{minDuration[0].toFixed(3)} s</span>
-                      </div>
-                      <Slider
-                        id="min-duration"
-                        value={minDuration}
-                        onValueChange={setMinDuration}
-                        max={1.0}
-                        min={0.1}
-                        step={0.005}
-                        disabled={!hasFile}
-                      />
-                      <p className="text-xs text-muted-foreground mt-1">Silences shorter than this are kept.</p>
-                    </div>
-
-                    {/* Padding */}
-                    <div>
-                      <Label className="text-xs font-medium block mb-2">Silence Padding</Label>
-                      <div className="flex items-center gap-4">
-                        {/* Left Padding Slider */}
-                        <div className="flex-1">
-                          <div className="flex justify-between mb-1">
-                            <span className="text-xs">Left</span>
-                            <span className="text-xs font-mono">{leftPadding[0].toFixed(4)} s</span>
-                          </div>
-                          <Slider
-                            value={[leftPadding[0]]} // Pass as array
-                            onValueChange={(value) => {
-                                const newPadding = [...leftPadding];
-                                newPadding[0] = value[0];
-                                if (paddingLinked) newPadding[1] = value[0];
-                                setLeftPadding(newPadding);
-                            }}
-                            max={0.2}
-                            min={0}
-                            step={0.0001}
-                            disabled={!hasFile}
-                          />
-                        </div>
-                        {/* Right Padding Slider */}
-                        <div className="flex-1">
-                          <div className="flex justify-between mb-1">
-                            <span className="text-xs">Right</span>
-                            <span className="text-xs font-mono">{rightPadding[0].toFixed(4)} s</span>
-                          </div>
-                          <Slider
-                            value={[rightPadding[0]]} // Pass as array
-                            onValueChange={(value) => {
-                              const newPadding = [...rightPadding];
-                              newPadding[0] = value[0];
-                              if (paddingLinked) newPadding[1] = value[0];
-                              setRightPadding(newPadding);
-                            }}
-                            max={0.2}
-                            min={0}
-                            step={0.0001}
-                            disabled={!hasFile}
-                          />
-                        </div>
-                      </div>
-                      {/* Link Button */}
-                      <div className="flex items-center justify-center mt-1">
-                        <Button
-                          variant={paddingLinked ? "secondary" : "outline"}
-                          size="sm"
-                          className="text-xs"
-                          onClick={() => setPaddingLinked(!paddingLinked)}
-                          title={paddingLinked ? "Unlink Padding" : "Link Padding"}
-                          disabled={!hasFile}
-                        >
-                          {paddingLinked ? "🔒 Linked" : "🔓 Unlinked"}
-                        </Button>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-1 text-center">Add padding before/after kept audio.</p>
-                    </div>
-                  </div>
-                </TabsContent>
-                
-                {/* Music Settings Tab Content */}
-                <TabsContent value="music">
-                  <MusicTab
-                    addMusic={addMusicEnabled}
-                    setAddMusic={setAddMusicEnabled}
-                    autoSelectMusic={autoSelectMusic}
-                    setAutoSelectMusic={setAutoSelectMusic}
-                    musicTrackId={selectedMusicTrackId}
-                    setMusicTrackId={setSelectedMusicTrackId}
-                    musicVolumeDb={musicVolumeDb} // Pass single number
-                    setMusicVolumeDb={setMusicVolumeDb} // Pass setter for single number
-                    availableMusicTracks={availableMusicTracks}
-                    isLoadingMusic={isLoadingMusic}
-                    tracksError={musicTracksError} // Pass error state
-                  />
-                </TabsContent>
-
-                {/* Export Settings Tab Content */}
-                <TabsContent value="export" className="p-4">
-                  <div className="relative space-y-6">
-                     {/* Loading Overlay */}
-                     {isExportProcessing && (
-                        <div className="absolute inset-0 bg-white/80 flex flex-col items-center justify-center z-10 rounded-md">
-                           <Loader2 className="h-8 w-8 animate-spin text-indigo-600 mb-3" />
-                           <p className="text-sm font-medium text-gray-700">{exportStatusMessage}</p>
-                         </div>
-                     )}
-
-                    {/* Export Format */}
-                    <div className="pt-0 space-y-3">
-                      <Label className="text-sm font-medium">Export Format</Label>
-                      <RadioGroup defaultValue="wav" value={exportFormat} onValueChange={(v) => setExportFormat(v as 'wav' | 'mp3')}>
-                        <div className="flex items-center space-x-2">
-                          <RadioGroupItem value="wav" id="r-wav" disabled={!hasFile || isExportProcessing}/>
-                          <Label htmlFor="r-wav">WAV (Lossless)</Label>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          <RadioGroupItem value="mp3" id="r-mp3" disabled={!hasFile || isExportProcessing}/>
-                          <Label htmlFor="r-mp3">MP3 (Compressed)</Label>
-                        </div>
-                      </RadioGroup>
-                    </div>
-
-                    {/* Transcription */}
-                    <div className="pt-0 space-y-3">
-                         <div className="flex items-center justify-between">
-                           <Label htmlFor="transcribe-toggle" className="text-sm font-medium">
-                               Generate Subtitles (SRT)
-                               <p className="text-xs text-gray-500 font-normal">Creates a .srt file via Whisper AI.</p>
-                           </Label>
-                           <Checkbox
-                               id="transcribe-toggle"
-                               checked={transcribeEnabled}
-                               onCheckedChange={(checked) => setTranscribeEnabled(Boolean(checked))}
-                               disabled={!hasFile || isExportProcessing}
-                           />
-                        </div>
-                        {transcribeEnabled && (
-                           <p className="text-xs text-amber-700 bg-amber-50 p-2 rounded-md border border-amber-200">
-                              Note: Transcription requires audio to be under 25MB. Export will proceed without subtitles if the limit is exceeded.
-                           </p>
-                        )}
-                    </div>
-
-                     {/* Target Duration (Optional Speed Up) */}
-                    <div className="pt-0 space-y-3">
-                      <Label htmlFor="target-duration" className="text-sm font-medium">
-                          Target Duration (Optional)
-                          <p className="text-xs text-gray-500 font-normal">Speed up audio to fit a duration (preserves pitch).</p>
-                      </Label>
-                       <div className="flex items-center space-x-2">
-                          <input 
-                              type="number" 
-                              id="target-duration"
-                              value={targetDuration ?? ''} 
-                              onChange={(e) => {
-                                  const val = e.target.value;
-                                  setTargetDuration(val ? parseFloat(val) : null);
-                              }}
-                              placeholder={currentProcessedDuration ? `Current: ${currentProcessedDuration.toFixed(1)}s` : "(e.g., 60)"}
-                              min="1"
-                              step="0.1"
-                              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 flex-grow"
-                              disabled={!hasFile || isExportProcessing}
-                            />
-                            <Button 
-                                variant="outline" 
-                                size="icon" 
-                                onClick={() => setTargetDuration(null)} 
-                                disabled={!targetDuration || !hasFile || isExportProcessing}
-                                title="Clear target duration"
-                                className="flex-shrink-0">
-                                 <X className="h-4 w-4" />
-                             </Button>
-                        </div>
-                         {displayEstimatedDuration && targetDuration && currentProcessedDuration && targetDuration < currentProcessedDuration && (
-                            <p className="text-xs text-indigo-600">
-                                Estimated Speed: x{displayEstimatedDuration.toFixed(2)}. Final duration may vary slightly.
-                            </p>
-                        )}
-                         {targetDuration && currentProcessedDuration && targetDuration >= currentProcessedDuration && (
-                            <p className="text-xs text-red-600">
-                                Target duration must be shorter than current duration ({currentProcessedDuration.toFixed(1)}s) to apply speed-up.
-                            </p>
-                        )}
-                    </div>
-
-                    {/* Export Button */}
-                    <div className="pt-4">
-                      <Button
-                        onClick={handleExportSegments} // Changed to export segments
-                        disabled={!hasFile || !audioBuffer || isExportProcessing}
-                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white"
-                      >
-                        {isExportProcessing ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            Processing...
-                          </>
-                        ) : (
-                          <>
-                            <Download className="mr-2 h-4 w-4" />
-                            Process & Download
-                          </>
-                        )}
+                    {/* Top Buttons: Remove Silence & Reset */}
+                    <div className="flex justify-between items-center gap-2">
+                      <Button onClick={handleApplySilenceRemoval} disabled={!hasFile || !audioBuffer} className="flex-1">
+                        Apply Auto Silence Removal
+                      </Button>
+                      <Button onClick={handleReset} variant="outline" disabled={!hasFile}>
+                        <RotateCcw className="h-4 w-4" />
                       </Button>
                     </div>
+
+                    {/* Settings Group */}
+                    <div className="border-t border-gray-200 pt-4 space-y-6">
+                          {/* Threshold slider */} 
+                        <div>
+                          <div className="flex justify-between mb-2">
+                            <label className="text-sm font-medium">Silence Threshold (dBFS)</label>
+                            <span className="text-sm font-mono">{thresholdDb[0].toFixed(1)} dB</span>
+                          </div>
+                          <p className="text-xs text-gray-500 mb-2">Audio below this level is treated as silent (0 dB is max).</p>
+                          <div className="flex items-center">
+                            <Slider 
+                              value={thresholdDb} 
+                              onValueChange={setThresholdDb}
+                                min={-60}
+                              max={0}
+                              step={0.5}
+                              disabled={!hasFile}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Minimum Duration slider */}
+                        <div>
+                          <div className="flex justify-between mb-2">
+                             <label className="text-sm font-medium">Minimum Silence Duration</label>
+                             <span className="text-sm font-mono">{minDuration[0].toFixed(2)} s</span>
+                          </div>
+                           <p className="text-xs text-gray-500 mb-2">Silence shorter than this duration will be ignored.</p>
+                          <Slider 
+                            value={minDuration} 
+                            onValueChange={setMinDuration}
+                               max={2}
+                            step={0.01}
+                            disabled={!hasFile}
+                          />
+                        </div>
+
+                        {/* Padding sliders */}
+                        <div>
+                          <label className="text-sm font-medium block mb-2">Padding</label>
+                          <p className="text-xs text-gray-500 mb-2">Keep some silence around cuts.</p>
+                          
+                          <div className="flex justify-between items-center gap-4 mb-2">
+                            <div className="flex-1">
+                              <div className="flex justify-between mb-1">
+                                <span className="text-xs">Left</span>
+                                <span className="text-xs font-mono">{leftPadding[0].toFixed(4)} s</span>
+                              </div>
+                              <Slider 
+                                value={leftPadding} 
+                                onValueChange={(value) => {
+                                    setLeftPadding(value);
+                                    if (paddingLinked) setRightPadding(value);
+                                }}
+                                max={0.2}
+                                step={0.0001}
+                                disabled={!hasFile}
+                              />
+                            </div>
+                            
+                            <div className="flex-1">
+                              <div className="flex justify-between mb-1">
+                                <span className="text-xs">Right</span>
+                                <span className="text-xs font-mono">{rightPadding[0].toFixed(4)} s</span>
+                              </div>
+                              <Slider 
+                                value={rightPadding} 
+                                onValueChange={(value) => {
+                                    setRightPadding(value);
+                                    if (paddingLinked) setLeftPadding(value);
+                                }}
+                                max={0.2}
+                                step={0.0001}
+                                disabled={!hasFile}
+                              />
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-center justify-center mt-1">
+                            <Button 
+                              variant={paddingLinked ? "secondary" : "outline"} 
+                              size="sm"
+                              className="text-xs"
+                              onClick={() => setPaddingLinked(!paddingLinked)}
+                              title={paddingLinked ? "Unlink Padding" : "Link Padding"}
+                              disabled={!hasFile}
+                            >
+                              {paddingLinked ? "🔒 Linked" : "🔓 Unlinked"}
+                            </Button>
+                          </div>
+                        </div>
+                        {/* --- End Padding --- */}
+                      </div>
+                    </div>
+                </TabsContent>
+                
+                {/* Music Settings Tab Content - NEW */} 
+                <TabsContent value="music" className="p-4">
+                  <div className="space-y-6">
+                    {/* Add Music Checkbox (Master Toggle) */} 
+                    <div className="flex items-center justify-between pb-4 border-b border-gray-200">
+                         <Label htmlFor="add-music-toggle" className="text-sm font-medium">
+                             Add Background Music
+                             <p className="text-xs text-gray-500 font-normal">Mix royalty-free music behind your voice.</p>
+                         </Label>
+                         <Checkbox 
+                             id="add-music-toggle"
+                             checked={addMusicEnabled}
+                             onCheckedChange={(checked) => setAddMusicEnabled(Boolean(checked))}
+                             disabled={!hasFile}
+                         />
+                    </div>
+                    
+                    {/* Conditionally show detailed music options */} 
+                    {addMusicEnabled && (
+                       <div className="space-y-6">
+                          {/* Auto-Select Music */} 
+                          <div className="flex items-center justify-between">
+                              <Label htmlFor="auto-select-music-toggle" className="text-sm font-medium">
+                                  Auto-Select Music
+                                  <p className="text-xs text-gray-500 font-normal">Let the system pick a random track.</p>
+                              </Label>
+                              <Checkbox 
+                                  id="auto-select-music-toggle"
+                                  checked={autoSelectMusic}
+                                  onCheckedChange={(checked) => setAutoSelectMusic(Boolean(checked))}
+                                  disabled={!hasFile}
+                              />
+                          </div>
+
+                          {/* Manual Track Selection (Disabled if Auto is on) */} 
+                          <div>
+                               <Label htmlFor="music-track-select" className={`text-sm font-medium block mb-1 ${autoSelectMusic ? 'text-gray-400' : ''}`}>Manual Track Selection</Label>
+                               <Select 
+                                  value={selectedMusicTrackId ?? ''} 
+                                  onValueChange={(value) => setSelectedMusicTrackId(value || null)} 
+                                  disabled={isLoadingMusic || availableMusicTracks.length === 0 || !hasFile || autoSelectMusic}
+                                  >
+                                   <SelectTrigger id="music-track-select">
+                                       <SelectValue placeholder={isLoadingMusic ? "Loading tracks..." : (autoSelectMusic ? "Auto-selecting..." : "Select track...")} />
+                                   </SelectTrigger>
+                                   <SelectContent>
+                                       {availableMusicTracks.map(track => {
+                                           console.log("[Select Render] Mapping track:", track.id, track.name);
+                                           return (
+                                             <SelectItem key={track.id} value={track.id}>
+                                                 {track.name} {track.mood ? `(${track.mood})` : ''}
+                                             </SelectItem>
+                                           );
+                                       })}
+                                       {availableMusicTracks.length === 0 && !isLoadingMusic && (
+                                          <SelectItem key="no-tracks-export" value="none" disabled>No tracks found</SelectItem>
+                                       )}
+                                   </SelectContent>
+                               </Select>
+                               {selectedMusicTrackId && !autoSelectMusic &&
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    {availableMusicTracks.find(t => t.id === selectedMusicTrackId)?.description}
+                                  </p>
+                               }
+                           </div>
+                          {/* Music Volume Slider */} 
+                          <div>
+                               <div className="flex justify-between mb-1">
+                                  <Label htmlFor="music-volume" className="text-xs font-medium">Music Ducking Level</Label>
+                                  <span className="text-xs font-mono">{musicVolumeDb[0]} dB</span>
+                               </div>
+                               <Slider 
+                                   id="music-volume"
+                                   value={musicVolumeDb} 
+                                   onValueChange={setMusicVolumeDb}
+                                   min={-30} // Range for music volume relative to VO
+                                   max={-6}
+                                   step={1}
+                                   disabled={!hasFile}
+                               />
+                               <p className="text-xs text-muted-foreground mt-1">Target music volume relative to voice (-18dB default).</p>
+                           </div>
+                       </div>
+                     )}
+                  </div>
+                </TabsContent>
+                            
+                {/* Export Settings Tab Content - UPDATED */} 
+                <TabsContent value="export" className="p-4">
+                   <div className="relative space-y-6">
+                     {/* Loading Overlay */} 
+                     {isExportProcessing && (
+                       <div className="absolute inset-0 bg-white/80 dark:bg-black/80 flex flex-col items-center justify-center z-10 rounded-md">
+                         <Loader2 className="h-8 w-8 text-primary animate-spin mb-3" />
+                         <p className="text-sm font-medium text-center px-4">{exportStatusMessage || "Processing..."}</p>
+                       </div>
+                     )}
+
+                     {/* Actual Content - Keep relevant export options */} 
+                     {/* Target Duration */} 
+                     <div className={`space-y-4 ${isExportProcessing ? 'opacity-50' : ''}`}> 
+                         <h3 className="text-sm font-medium">Adjust Speed to Target Duration</h3>
+                            <div className="text-sm">
+                                Estimated Current Duration: 
+                                <span className="font-mono ml-2">
+                                    {displayEstimatedDuration !== null ? `${displayEstimatedDuration.toFixed(2)}s` : (currentProcessedDuration !== null ? `${currentProcessedDuration.toFixed(2)}s` : 'N/A')}
+                                </span>
+                                {appliedPlaybackRate !== null && appliedPlaybackRate !== 1 && (
+                                    <span className="text-xs text-muted-foreground ml-2">
+                                        (Rate: {appliedPlaybackRate.toFixed(2)}x)
+                                    </span>
+                                )}
+                            </div>
+                        <div className="flex items-center gap-2">
+                                <input 
+                                    type="number"
+                                    id="target-duration"
+                                    step="0.1"
+                                     min="0.1"
+                                    value={targetDuration === null ? '' : targetDuration}
+                                    onChange={(e) => {
+                                        const val = e.target.value;
+                                        setTargetDuration(val === '' ? null : Math.max(0.1, parseFloat(val)));
+                                    }}
+                                    placeholder={currentProcessedDuration !== null ? `${currentProcessedDuration.toFixed(2)}` : 'e.g., 60'}
+                                     className="flex-grow p-2 border rounded bg-background disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled={!hasFile}
+                          />
+                                <Button 
+                                    onClick={handleApplySpeedAdjustment} 
+                                    disabled={!hasFile || !audioBuffer || !targetDuration || targetDuration <= 0 || !currentProcessedDuration}
+                                    variant="secondary" 
+                                     className="flex-shrink-0"
+                                >
+                                    Apply
+                                </Button>
+                            </div>
+                                </div>
+                     {/* End Target Duration */} 
+
+                     {/* Grouped Export Options (Reduced) */} 
+                     <div className={`border-t border-gray-200 pt-4 space-y-6 ${isExportProcessing ? 'opacity-50' : ''}`}> 
+                       <h3 className="text-sm font-medium mb-2">Export Options</h3>
+                       {/* Transcription Checkbox */} 
+                       <div className="pt-0">
+                               <div className="flex items-center justify-between">
+                               <Label htmlFor="transcribe-toggle" className="text-sm font-medium">
+                                   Generate Subtitles (SRT)
+                                   <p className="text-xs text-gray-500 font-normal">Creates word-level timestamps via Whisper.</p>
+                               </Label>
+                               <Checkbox 
+                                    id="transcribe-toggle"
+                                    checked={transcribeEnabled}
+                                    onCheckedChange={(checked) => setTranscribeEnabled(Boolean(checked))}
+                              disabled={!hasFile}
+                            />
+                               </div>
+                           </div>
+                       {/* --- Add Music Section --- */} 
+                       <div className="pt-0 space-y-3">
+                         <div className="flex items-center justify-between">
+                             <Label htmlFor="add-music-toggle" className="text-sm font-medium">
+                                 Add Background Music
+                                 <p className="text-xs text-gray-500 font-normal">Mix royalty-free music behind your voice.</p>
+                             </Label>
+                             <Checkbox 
+                                 id="add-music-toggle"
+                                 checked={addMusicEnabled}
+                                 onCheckedChange={(checked) => setAddMusicEnabled(Boolean(checked))}
+                                 disabled={!hasFile}
+                             />
+                        </div>
+                        {/* Conditionally show music selection options */} 
+                        {addMusicEnabled && (
+                            <div className="pl-2 space-y-4 pt-2 border-l-2 border-muted">
+                               {/* Music Track Selection */} 
+                               <div>
+                                   <Label htmlFor="music-track-select" className="text-xs font-medium block mb-1">Music Track</Label>
+                                   <Select 
+                                      value={selectedMusicTrackId ?? ''} 
+                                      onValueChange={(value) => setSelectedMusicTrackId(value || null)} 
+                                      disabled={isLoadingMusic || availableMusicTracks.length === 0 || !hasFile}
+                                      >
+                                       <SelectTrigger id="music-track-select">
+                                           <SelectValue placeholder={isLoadingMusic ? "Loading tracks..." : "Select track..."} />
+                                       </SelectTrigger>
+                                       <SelectContent>
+                                           {/* <SelectItem value="default">Default Track</SelectItem> */} {/* Option for default */} 
+                                           {availableMusicTracks.map(track => {
+                                               console.log("[Select Render] Mapping track:", track.id, track.name);
+                                               return (
+                                                 <SelectItem key={track.id} value={track.id}>
+                                                     {track.name} {track.mood ? `(${track.mood})` : ''}
+                                                 </SelectItem>
+                                               );
+                                           })}
+                                           {availableMusicTracks.length === 0 && !isLoadingMusic && (
+                                              <SelectItem key="no-tracks-export" value="none" disabled>No tracks found</SelectItem>
+                                           )}
+                                       </SelectContent>
+                                   </Select>
+                                   {selectedMusicTrackId && 
+                                      <p className="text-xs text-muted-foreground mt-1">
+                                        {availableMusicTracks.find(t => t.id === selectedMusicTrackId)?.description}
+                                      </p>
+                                   }
+                               </div>
+                               {/* Music Volume Slider */} 
+                               <div>
+                                   <div className="flex justify-between mb-1">
+                                      <Label htmlFor="music-volume" className="text-xs font-medium">Music Volume</Label>
+                                      <span className="text-xs font-mono">{musicVolumeDb[0]} dB</span>
+                                   </div>
+                                   <Slider 
+                                       id="music-volume"
+                                       value={musicVolumeDb} 
+                                       onValueChange={setMusicVolumeDb}
+                                       min={-30} // Range for music volume relative to VO
+                                       max={-6}
+                                       step={1}
+                                       disabled={!hasFile}
+                                   />
+                                   <p className="text-xs text-muted-foreground mt-1">Adjusts background music level (-18dB default).</p>
+                               </div>
+                           </div>
+                        )}
+                        </div>
+                        {/* --- End Add Music Section --- */}
+
+                        {/* Export Format Selection */} 
+                        <div className="pt-0">
+                            <Label className="text-sm font-medium block mb-2">Export Format</Label>
+                            <RadioGroup 
+                                defaultValue={exportFormat}
+                                value={exportFormat} 
+                                onValueChange={(value: 'wav' | 'mp3') => setExportFormat(value)}
+                                className="flex space-x-4"
+                                disabled={!hasFile}
+                            >
+                                <div className="flex items-center space-x-2">
+                                    <RadioGroupItem value="wav" id="format-wav" disabled={!hasFile} />
+                                    <Label htmlFor="format-wav" className={`text-sm ${!hasFile ? 'text-gray-400 cursor-not-allowed' : ''}`}>WAV (Lossless)</Label>
+                                </div>
+                                <div className="flex items-center space-x-2">
+                                    <RadioGroupItem value="mp3" id="format-mp3" disabled={!hasFile} />
+                                    <Label htmlFor="format-mp3" className={`text-sm ${!hasFile ? 'text-gray-400 cursor-not-allowed' : ''}`}>MP3 (Compressed)</Label>
+                                </div>
+                            </RadioGroup>
+                            <p className="text-xs text-gray-500 mt-1">MP3 is smaller (faster upload, good for transcription) but loses some quality.</p>
+                        </div>
+                        {/* Export Button */} 
+                        <div className="pt-0">
+                                <Button 
+                                    onClick={handleExportSegments} 
+                                    disabled={!hasFile || !audioBuffer || isExportProcessing} 
+                                    className="w-full"
+                                >
+                                    {isExportProcessing ? (
+                                        <Loader2 className="h-4 w-4 mr-2 animate-spin" /> 
+                                    ) : (
+                                        <Download className="h-4 w-4 mr-2" />
+                                    )}
+                                    {isExportProcessing ? 'Processing Export...' : 
+                                `Export Processed Audio (${exportFormat.toUpperCase()})`
+                                }
+                            </Button>
+                            <p className="text-xs text-gray-500 mt-2 text-center">
+                                {appliedPlaybackRate && appliedPlaybackRate !== 1 
+                                    ? 'Exports with speed/pitch change applied.' 
+                                    : 'Exports at original speed.'
+                                }
+                            </p> 
+                        </div>
+                    </div>
+                     {/* End Grouped Export Options */} 
                   </div>
                 </TabsContent>
               </Tabs>
