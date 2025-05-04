@@ -1156,6 +1156,12 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                 {/* Silence Settings Tab Content */}
                 <TabsContent value="silence" className="p-4">
                   <div className="space-y-6">
+                    {/* Add Apply Button Back */}
+                    <Button onClick={handleApplySilenceRemoval} disabled={!hasFile || !audioBuffer} className="w-full">
+                         Apply Auto Silence Detection
+                    </Button>
+                    <p className="text-xs text-muted-foreground text-center">Adjust settings below and click Apply to see changes on the timeline.</p>
+                    
                     {/* Threshold */}
                     <div>
                       <div className="flex justify-between mb-1">
@@ -1256,7 +1262,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                 </TabsContent>
                 
                 {/* Music Settings Tab Content */}
-                <TabsContent value="music">
+                <TabsContent value="music" className="p-4">
                   <MusicTab
                     addMusic={addMusicEnabled}
                     setAddMusic={setAddMusicEnabled}
