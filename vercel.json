@@ -1,7 +1,7 @@
 {
   "functions": {
     "api/process.js": {
-      "maxDuration": 300
+      "maxDuration": 60
     }
   }
 } 
