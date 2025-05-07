@@ -43,7 +43,8 @@ curl -X POST \\
       "addBackgroundMusic": true,
       "autoSelectMusicTrack": false,
       "selectedMusicTrackId": "your_track_id_here",
-      "musicVolumeDb": -18
+      "musicVolumeDb": -18,
+      "responseFormat": "binary"
     }
   }'`;
 
@@ -472,8 +473,39 @@ async function processAudioWithSlicr(audioFile, processingParams) {
                    <td className="border border-border p-2"><code className="font-mono">-15</code></td>
                  </tr>
                   {/* --- Music Parameters End --- */}
+                 {/* --- New Response Format Parameter --- */}
+                 <tr className="bg-muted/50">
+                   <td colSpan={4} className="border border-border p-2 font-semibold">Response Format</td>
+                 </tr>
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">responseFormat</code></td>
+                   <td className="border border-border p-2">String</td>
+                   <td className="border border-border p-2">Determines the response type. Options: <br/>- <code className="font-mono">"url"</code> (default): Returns JSON with S3 URLs for processed files. <br/>- <code className="font-mono">"binary"</code>: Returns the processed audio file directly as a binary stream. If <code className="font-mono">"binary"</code> is chosen, SRT files (if transcribed) are still uploaded to S3 but their URL is not included in this direct audio response.</td>
+                   <td className="border border-border p-2"><code className="font-mono">"binary"</code> or <code className="font-mono">"url"</code></td>
+                 </tr>
+                 {/* --- End New Response Format Parameter --- */}
                </tbody>
              </table>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Example Requests</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+             <div>
+                <h4 className="font-semibold mb-2">cURL Example (with responseFormat: "binary"):</h4>
+                 <p className="text-sm mb-2 text-muted-foreground">This example demonstrates getting the audio file directly. Add <code className="font-mono"> &gt; processed_audio.mp3</code> to the end of the last curl command to save the binary output to a file.</p>
+                <CodeBlock language="bash" code={curlExample.replace(
+                  '"musicVolumeDb": -18\n    }\n  }\'' /* Target this closing part */,
+                  '"musicVolumeDb": -18,\n      "responseFormat": "binary"\n    }\n  }\'' /* Replacement */
+                )} />
+             </div>
+             <div>
+                <h4 className="font-semibold mb-2">JavaScript Fetch Example (requesting URL response):</h4>
+                <CodeBlock language="javascript" code={jsExample} />
+             </div>
           </CardContent>
         </Card>
 

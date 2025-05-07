@@ -252,10 +252,11 @@ export default async function handler(req, res) {
   let s3SrtKey = null;
   let s3SrtUrl = null; // Declare s3SrtUrl in the outer scope
   let finalExportFormat = 'wav'; // Default, can be overridden by params
-  let finalS3Key = ''; // This will be for the PROCESSED output
-  let finalContentType = 'audio/wav';
-  let pathToUpload = null; // Final path (mixed or not, converted or not) before S3 upload
+  let finalS3Key = ''; // This will be for the PROCESSED output if using S3
+  let finalContentType = 'audio/wav'; // Default, can be overridden by params & final file type
+  let pathToUpload = null; // Final path (mixed or not, converted or not) before S3 upload or binary stream
   let fullTranscriptText = null;
+  let responseFormat = 'url'; // Initialize with default, will be overwritten by params
 
   try {
     // --- Get Input: Expect s3Key and params from JSON body ---
@@ -293,6 +294,10 @@ export default async function handler(req, res) {
             throw new Error('Invalid parameters format. Expected object or JSON string.');
         }
         console.log('[API] Received and Parsed Params:', params);
+        // --- Get responseFormat parameter ---
+        responseFormat = params.responseFormat || 'url'; // Default to 'url'
+        console.log(`[API] Response format set to: ${responseFormat}`);
+        // ----------------------------------
     } catch (err) {
         console.error('[API] Error parsing parameters:', err);
         res.status(400).json({ success: false, error: 'Invalid parameters format' });
@@ -965,47 +970,114 @@ Respond clearly with only the exact song title (no additional commentary or expl
     console.log(`[API Upload Prep] Final S3 Key: ${finalS3Key}, ContentType: ${finalContentType}`);
     // --- End Final Conversion ---
 
-    // --- Output Handling (S3 Upload) --- 
-    // Uploads the file at `pathToUpload` (WAV/MP3, potentially mixed)
-    // Uses finalS3Key and finalContentType
-    console.log(`[API Upload] Uploading final audio from: ${pathToUpload}`);
-    
-    // Check if S3 bucket is configured
-    if (!S3_BUCKET_NAME || !s3Client) {
-        console.error("[API] S3 Bucket Name or S3 Client is not configured. Cannot upload.");
-        throw new Error('S3 is not configured for upload.');
-    }
+    // --- Output Handling (S3 Upload or Direct Binary Response) --- 
+    if (responseFormat === 'binary') {
+        if (!fs.existsSync(pathToUpload)) {
+            console.error(`[API Binary Response] Error: File not found at ${pathToUpload} for binary streaming.`);
+            // Check if headers already sent before trying to send error response
+            if (!res.headersSent) {
+                res.status(500).json({ success: false, error: 'Processed file not found for binary response.'});
+            }
+            // Ensure the response is ended if not already handled by error sending
+            if (!res.writableEnded) {
+                res.end();
+            }
+            // Early exit from this block if file not found
+            // The finally block will handle cleanup of other temp files.
+            return; 
+        }
 
-    // Upload final audio to S3 using finalS3Key and finalContentType
-    console.log(`[API Upload] Uploading final audio to S3 bucket: ${S3_BUCKET_NAME}, Key: ${finalS3Key}`);
-    const audioUploadCommand = new PutObjectCommand({
-        Bucket: S3_BUCKET_NAME,
-        Key: finalS3Key, // Use the key with correct extension
-        Body: fs.createReadStream(pathToUpload),
-        ContentType: finalContentType // Use the correct content type
-    });
-    await s3Client.send(audioUploadCommand);
-    // Use finalS3Key to construct the URL
-    const s3AudioUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalS3Key}`;
-    console.log(`[API Upload] Final audio uploaded successfully: ${s3AudioUrl}`);
-    // --- End Output Handling ---
+        console.log(`[API Binary Response] Preparing to stream binary file: ${pathToUpload}`);
+        const finalFileExtensionForBinary = path.extname(pathToUpload)?.substring(1) || finalExportFormat;
+        const binaryContentType = finalFileExtensionForBinary === 'mp3' ? 'audio/mpeg' : 'audio/wav';
+        const binaryFilename = `processed_audio_${Date.now()}.${finalFileExtensionForBinary}`;
 
-    // --- Send Response ---
+        res.setHeader('Content-Type', binaryContentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${binaryFilename}"`);
+        
+        const stats = fs.statSync(pathToUpload);
+        res.setHeader('Content-Length', stats.size);
+
+        const readStream = fs.createReadStream(pathToUpload);
+        
+        // Pipe the stream to the response object.
+        // This handles backpressure and streams the data efficiently.
+        readStream.pipe(res);
+
+        readStream.on('error', (err) => {
+            console.error('[API Binary Response] Error streaming file:', err);
+            if (!res.headersSent) {
+                // Try to send an error response if possible, though it might be too late if streaming started.
+                try {
+                    res.status(500).json({ success: false, error: 'Failed to stream file.' });
+                } catch (e) {
+                    console.error("[API Binary Response] Error sending error status after stream error:", e);
+                }
+            }
+             // Ensure response is ended if not already by pipe error handling
+            if (!res.writableEnded) {
+                res.end();
+            }
+        });
+
+        readStream.on('end', () => {
+            console.log(`[API Binary Response] Binary file ${binaryFilename} streamed successfully.`);
+            // res.end() is called automatically by pipe when the readStream ends.
+        });
+
+    } else { // Default 'url' responseFormat: Upload to S3 and send JSON response
+        console.log(`[API Upload] Uploading final audio from: ${pathToUpload} to S3 Key: ${finalS3Key}`);
+        
+        if (!fs.existsSync(pathToUpload)) {
+            console.error(`[API S3 Upload] Error: File not found at ${pathToUpload} for S3 upload.`);
+             if (!res.headersSent) {
+                res.status(500).json({ success: false, error: 'Processed file not found for S3 upload.'});
+            }
+            if (!res.writableEnded) {
+                res.end();
+            }
+            return; 
+        }
+        
+        if (!S3_BUCKET_NAME || !s3Client) {
+            console.error("[API S3 Upload] S3 Bucket Name or S3 Client is not configured. Cannot upload.");
+            if (!res.headersSent) {
+                 res.status(500).json({ success: false, error: 'S3 is not configured for upload.'});
+            }
+            if (!res.writableEnded) {
+                res.end();
+            }
+            return;
+        }
+
+        const audioUploadCommand = new PutObjectCommand({
+            Bucket: S3_BUCKET_NAME,
+            Key: finalS3Key, 
+            Body: fs.createReadStream(pathToUpload),
+            ContentType: finalContentType 
+        });
+        await s3Client.send(audioUploadCommand);
+        const s3AudioUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalS3Key}`;
+        console.log(`[API S3 Upload] Final audio uploaded successfully: ${s3AudioUrl}`);
+        // --- End S3 Upload for audio ---
+
+        // --- Send JSON Response with URLs ---
         res.statusCode = 200;
         res.setHeader('Content-Type', 'application/json');
-    const responsePayload = {
+        const responsePayload = {
             success: true,
-        audioUrl: s3AudioUrl
-    };
-    if (s3SrtUrl) {
-        responsePayload.srtUrl = s3SrtUrl; // Add SRT URL if generated
+            audioUrl: s3AudioUrl
+        };
+        // Only include srtUrl if transcription was enabled AND successful
+        if (transcribe && s3SrtUrl) { 
+            responsePayload.srtUrl = s3SrtUrl;
+        }
+        console.log("[API Response JSON] Payload being sent:", JSON.stringify(responsePayload, null, 2));
+        res.end(JSON.stringify(responsePayload));
+        console.log("[API] Request processed successfully. Response sent for URL format.");
+        // --- End Send JSON Response ---
     }
-    // --- Add logging before sending --- 
-    console.log("[API Response] Payload being sent:", JSON.stringify(responsePayload, null, 2));
-    // ---------------------------------
-    res.end(JSON.stringify(responsePayload));
-    console.log("[API] Request processed successfully. Response sent.");
-    // --- End Send Response ---
+    // --- End Output Handling ---
 
   } catch (processError) {
     // --- Main Processing Error Handling --- 
