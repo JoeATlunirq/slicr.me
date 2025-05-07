@@ -404,429 +404,189 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
     return silences;
   }
 
-  // Export sliced audio based on regions
-  const handleExportAudio = () => {
-    if (!audioBuffer || !regions.length) return;
-    regions.forEach((region, idx) => {
-      const startSample = Math.floor(region.start * audioBuffer.sampleRate);
-      const endSample = Math.floor(region.end * audioBuffer.sampleRate);
-      const length = endSample - startSample;
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const newBuffer = ctx.createBuffer(
-        audioBuffer.numberOfChannels,
-        length,
-        audioBuffer.sampleRate
-      );
-      for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
-        const channelData = audioBuffer.getChannelData(ch).slice(startSample, endSample);
-        newBuffer.copyToChannel(channelData, ch, 0);
-      }
-      // Convert to WAV Blob
-      const wavBlob = audioBufferToWavBlob(newBuffer);
-      const url = URL.createObjectURL(wavBlob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `cut_${idx + 1}.wav`;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }, 100);
-    });
-    toast({ title: "Exported audio cuts!" });
+  // --- Helper to get final deleted regions (placeholder if not used by server) ---
+  // If the server handles all silence removal based on parameters,
+  // this function might not be strictly needed to collect regions for the API call.
+  // However, it might be used for other UI logic or if some pre-selection is desired.
+  // For now, let's assume it might still be called, and it should return current regions.
+  const getFinalDeletedRegions = (): { start: number; end: number }[] => {
+    // If regions are directly from timelineRef.current?.getDeletedRegions(), that would be ideal.
+    // For now, returning the state `regions` which might be auto-detected ones.
+    console.warn("[getFinalDeletedRegions] Returning regions from state. Ensure this aligns with server expectations if it needs pre-calculated cuts.");
+    return regions; 
   };
+  // --------------------------------------------------------------------------
 
-  // Export cut list as CSV
-  const handleExportCutList = () => {
-    if (!regions.length) return;
-    const csv = regions.map((r, i) => `${i + 1},${r.start.toFixed(3)},${r.end.toFixed(3)}`).join("\n");
-    const blob = new Blob([`Index,Start,End\n${csv}`], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'cut_list.csv';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 100);
-    toast({ title: "Exported cut list!" });
-  };
-
-  // Updated handler for the main button in the Silence tab
+  // --- Placeholder or reinstated handleApplySilenceRemoval ---
+  // If this is still called by any UI element, ensure it has a definition.
+  // If it's obsolete with the new server-side processing, its calls should be removed.
   const handleApplySilenceRemoval = () => {
-    console.log("[ApplySilenceRemoval] Triggered."); 
+    console.log("[handleApplySilenceRemoval] Called. Current implementation might be a placeholder.");
     if (!audioBuffer) {
-        toast({ title: "Error", description: "No audio buffer available.", variant: "destructive" });
+        toast({ title: "Error", description: "No audio buffer available to detect silence.", variant: "destructive" });
         return;
     }
-    toast({ title: "Processing Silence..." });
-    // Detect silences using all current settings
+    // Example: Re-run client-side detection if needed for UI, but server does the actual work.
     const detectedSilentRegions = detectSilence(
         audioBuffer, 
-        thresholdDb[0], // Pass dB value
+        thresholdDb[0],
         minDuration[0], 
         leftPadding[0], 
         rightPadding[0]
     );
-    // Update the main regions state with these results
-    // These regions will be passed to Timeline and interpreted as 'deleted'
-    setRegions(detectedSilentRegions);
-    console.log("[ApplySilenceRemoval] Detected regions to remove:", detectedSilentRegions);
+    setRegions(detectedSilentRegions); // Update UI state if necessary
     toast({
-      title: "Silence Removal Applied!",
-      description: `${detectedSilentRegions.length} silent region(s) marked for removal on timeline.`,
+      title: "Silence Regions Updated (Client-side)",
+      description: `${detectedSilentRegions.length} silent region(s) marked on timeline based on current settings. Server will perform final processing.`,
     });
   };
+  // --------------------------------------------------------
 
-  // --- Export Handlers ---
-
-  // Helper to get final deleted regions (now represented by specific region objects)
-  const getFinalDeletedRegions = (): { start: number; end: number }[] => {
-      // We need access to the regions plugin instance from the Timeline component.
-      // This is tricky without complex state lifting or context.
-      // For now, we will assume the `regions` state holds the *initial* silence regions,
-      // and we don't have access to the manually deleted regions created in Timeline.
-      // TODO: Refactor state management (Context API?) to share regions plugin/deleted regions.
-      
-      console.warn("Export currently only considers initial silence regions due to state limitations.");
-      // Return the regions generated by detectSilence (which includes padding/spikes)
-      return regions; 
-  };
-
-  // Updated to handle both single file and segmented export, now with time stretching
-  const handleExportSegments = async () => {
-    if (!audioBuffer) {
-      toast({ title: "Error", description: "No audio loaded.", variant: "destructive" });
+  // Modified handleExportAudio to implement the 3-step process
+  const handleExportAudio = async () => {
+    if (!originalFile) {
+      toast({ title: "Error", description: "No audio file loaded or original file not found.", variant: "destructive" });
+      setIsExportProcessing(false);
       return;
-    }
-    if (isExportProcessing) {
-        toast({ title: "Busy", description: "Already processing an export.", variant: "destructive"});
-        return;
     }
 
     setIsExportProcessing(true);
-    const exportType = exportFormat.toUpperCase();
-    // --- Set initial status message --- 
-    setExportStatusMessage(`Sending to server (${exportType})...`);
-    toast({ title: `Preparing Export (${exportType})...`, description: "Sending file to server..." }); // Keep toast for consistency
+    setExportStatusMessage("Initiating export...");
 
-    // --- Prepare data for API --- 
-    if (!originalFile) {
-        toast({ title: "Error", description: "Original file not found.", variant: "destructive" });
-        setIsExportProcessing(false);
-        return;
-    }
-
-    const params = {
-        thresholdDb: thresholdDb[0],
-        minDuration: minDuration[0],
-        leftPadding: leftPadding[0],
-        rightPadding: rightPadding[0],
-        targetDuration: targetDuration,
-        exportAsSections: exportAsSections,
-        transcribe: transcribeEnabled,
-        exportFormat: exportFormat,
-        // --- Music Parameters (Improved Naming) ---
-        // Boolean indicating if music should be added
-        addBackgroundMusic: addMusicEnabled,
-        // Boolean indicating if the server should auto-select a track (only relevant if addBackgroundMusic is true)
-        autoSelectMusicTrack: addMusicEnabled ? autoSelectMusic : undefined,
-        // The ID of the manually selected track (only relevant if addBackgroundMusic is true and autoSelectMusicTrack is false)
-        selectedMusicTrackId: addMusicEnabled && !autoSelectMusic ? (selectedMusicTrackId || undefined) : undefined,
-        // The target volume level for the music ducking in dB (only relevant if addBackgroundMusic is true)
-        musicVolumeDb: addMusicEnabled ? musicVolumeDb[0] : undefined,
+    // --- Prepare processing parameters ---
+    const finalDeletedRegions = getFinalDeletedRegions(); // Get combined regions
+    const processingParams = {
+      thresholdDb: thresholdDb[0],
+      minDuration: minDuration[0],
+      leftPadding: leftPadding[0],
+      rightPadding: rightPadding[0],
+      targetDuration: targetDuration, // from state
+      transcribe: transcribeEnabled, // from state
+      exportFormat: exportFormat,   // from state
+      // Music parameters
+      addBackgroundMusic: addMusicEnabled,
+      autoSelectMusicTrack: autoSelectMusic,
+      selectedMusicTrackId: selectedMusicTrackId,
+      musicVolumeDb: musicVolumeDb[0],
+      // regionsToCut: finalDeletedRegions, // Server-side silence removal based on parameters, not pre-cut regions
     };
-
-    const formData = new FormData();
-    formData.append('audioFile', originalFile);
-    formData.append('params', JSON.stringify(params));
-
-    console.log("[API Export] Sending parameters:", params);
-    // ---------------------------
-
-    // Ensure Audio Context is ready before proceeding (might not be needed if only sending file)
-    const audioCtx = await initializeAudio(); 
-    if (!audioCtx) { 
-        toast({ title: "Error", description: "Audio engine not ready. Please try again.", variant: "destructive" });
-        setIsExportProcessing(false);
-        return;
-    }
-
-    // Get API Key from environment variables
-    const apiKey = import.meta.env.VITE_SLICR_API_KEY;
-    if (!apiKey) {
-      toast({ title: "Configuration Error", description: "API Key is missing in frontend configuration.", variant: "destructive" });
-      setIsExportProcessing(false);
-      setExportStatusMessage("Configuration Error");
-        return;
-    }
+    console.log("[Export Audio] Using processing params:", processingParams);
+    // -------------------------------------
 
     try {
-      // --- Call API with Auth Header --- 
-      setExportStatusMessage("Processing on server..."); // Update status
-      const response = await fetch('/api/process', {
-          method: 'POST',
-          headers: {
-            // Add the API Key header
-            'X-API-Key': apiKey
-          },
-          body: formData
-      });
+      // Step 1: Get a pre-signed URL
+      setExportStatusMessage("Step 1/3: Generating secure upload link...");
+      toast({ title: "Exporting...", description: "Step 1/3: Generating secure upload link..." });
 
-      // --- Enhanced Response Handling --- 
-      let result;
-      try {
-          const responseText = await response.text();
-          console.log("[API Export] Raw Response Text:", responseText);
-
-          if (!response.ok) {
-              // Try parsing error JSON, fallback to text
-              let errorMsg = `Server error: ${response.status} ${response.statusText}`;
-              try {
-                  const errorData = JSON.parse(responseText);
-                  errorMsg = `${errorMsg} - ${errorData?.error || 'Unknown server error details'}`;
-              } catch (parseError) {
-                  errorMsg = `${errorMsg} - Response: ${responseText}`;
-              }
-              throw new Error(errorMsg);
-          }
-
-          // If response.ok, try parsing the text as JSON
-          try {
-              result = JSON.parse(responseText);
-              console.log("[API Export] Parsed Response JSON:", result);
-          } catch (parseError) {
-              console.error("[API Export] Failed to parse response JSON:", parseError);
-              throw new Error(`Failed to parse server response. Raw response: ${responseText}`);
-          }
-
-      } catch (fetchError) {
-          // Catch errors from fetch() itself or response processing
-          console.error("[API Export] Error fetching or processing response:", fetchError);
-      setIsExportProcessing(false); // Stop loading indicator
-          toast({ title: "Network/Response Error", description: `Failed to communicate with server: ${fetchError instanceof Error ? fetchError.message : 'Unknown network error'}`, variant: "destructive" });
-          return; // Exit the function early
-      }
-      // --- End Enhanced Response Handling ---
-
-      setIsExportProcessing(false); // Stop loading indicator (moved after response handling)
-
-      // --- Check Parsed Result --- 
-      // Check if result is defined and has the expected structure
-      if (!result || !result.success || !(result.audioUrl || result.srtUrl)) {
-         const errorDetail = result?.error || "API did not return valid file data or success was false.";
-         console.error("[API Export] Invalid result structure or success=false:", result);
-         throw new Error(errorDetail); // Use specific error if available
-      }
-      // ---------------------------
-
-      console.log("[API Export] Received success response structure is valid:", result);
-
-      // --- Handle downloaded files/links (using fetch for forced download) --- 
-      let downloaded = false;
-      
-      // Helper function for forced download
-      const forceDownload = async (url: string, defaultFilename: string) => {
-          if (!url) return false;
-          let downloadToastId: string | number | undefined = undefined;
-          try {
-              // Update status message for download
-              setExportStatusMessage(`Fetching ${defaultFilename}...`);
-              // Store the ID from the toast return value
-              const toastInstance = toast({ title: "Downloading...", description: `Fetching ${defaultFilename}...` });
-              downloadToastId = toastInstance?.id; // Use optional chaining
-              const response = await fetch(url);
-      if (!response.ok) {
-                  throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
-              }
-              const blob = await response.blob();
-              const objectUrl = URL.createObjectURL(blob);
-              
-              const link = document.createElement('a');
-              link.href = objectUrl;
-              const filename = url.substring(url.lastIndexOf('/') + 1) || defaultFilename;
-              link.download = filename;
-              document.body.appendChild(link);
-              link.click();
-              document.body.removeChild(link);
-              
-              // Revoke the object URL after a short delay
-              setTimeout(() => URL.revokeObjectURL(objectUrl), 1000); 
-              // Dismiss using the hook's dismiss function
-              if (typeof downloadToastId === 'string') {
-                dismissToast(downloadToastId);
-              }
-              toast({ title: "Download Started", description: `Downloading ${filename}...` });
-              return true;
-          } catch (error) {
-              console.error(`Error forcing download for ${url}:`, error);
-              // Clear status on error
-              setExportStatusMessage("Error occurred.");
-              // Dismiss using the hook's dismiss function
-              if (typeof downloadToastId === 'string') {
-                 dismissToast(downloadToastId);
-      }
-              toast({ title: "Download Error", description: `Could not download ${defaultFilename}. ${error instanceof Error ? error.message : 'Network error'}`, variant: "destructive" });
-              return false;
-          }
+      const generateUrlPayload = {
+        fileName: originalFile.name,
+        contentType: originalFile.type,
       };
 
-      // Attempt to download audio
-      if (result.audioUrl) {
-          const audioDownloaded = await forceDownload(result.audioUrl, `processed_audio.${exportFormat}`);
-          if (audioDownloaded) downloaded = true;
-      } else {
-          console.warn("[API Export] No audioUrl found in response.");
+      const generateUrlHeaders: HeadersInit = {
+        'Content-Type': 'application/json',
+      };
+      if (VITE_SLICR_API_KEY) {
+        generateUrlHeaders['X-API-Key'] = VITE_SLICR_API_KEY;
+      }
+
+      const presignedUrlResponse = await fetch('/api/generate-upload-url', { // Use relative path for Vercel
+        method: 'POST',
+        headers: generateUrlHeaders,
+        body: JSON.stringify(generateUrlPayload),
+      });
+
+      if (!presignedUrlResponse.ok) {
+        const errorData = await presignedUrlResponse.json().catch(() => ({ error: 'Failed to get pre-signed URL, server returned invalid response' }));
+        throw new Error(`Failed to get pre-signed URL: ${presignedUrlResponse.status} - ${errorData.error || presignedUrlResponse.statusText}`);
+      }
+      const { uploadUrl, s3Key } = await presignedUrlResponse.json();
+
+      if (!uploadUrl || !s3Key) {
+        throw new Error("Pre-signed URL or s3Key missing in server response.");
+      }
+      console.log("[Export Audio] Step 1 successful. S3 Key:", s3Key);
+
+      // Step 2: Upload the file directly to S3
+      setExportStatusMessage("Step 2/3: Uploading audio file to secure storage...");
+      toast({ title: "Exporting...", description: "Step 2/3: Uploading audio file... (this may take a moment)" });
+
+      const s3UploadResponse = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': originalFile.type,
+        },
+        body: originalFile,
+      });
+
+      if (!s3UploadResponse.ok) {
+        // Attempt to get error details from S3 (often XML)
+        const s3ErrorText = await s3UploadResponse.text();
+        console.error("[Export Audio] S3 Upload Error Text:", s3ErrorText);
+        throw new Error(`S3 upload failed: ${s3UploadResponse.status} ${s3UploadResponse.statusText}. Check S3 bucket CORS and permissions.`);
+      }
+      console.log("[Export Audio] Step 2 successful. File uploaded to S3.");
+
+      // Step 3: Call the process API with the s3Key
+      setExportStatusMessage("Step 3/3: Processing audio with Slicr...");
+      toast({ title: "Exporting...", description: "Step 3/3: Processing audio..." });
+      
+      const processApiPayload = {
+        s3Key: s3Key,
+        params: processingParams,
+      };
+
+      const processApiHeaders: HeadersInit = {
+        'Content-Type': 'application/json',
+      };
+      if (VITE_SLICR_API_KEY) {
+        processApiHeaders['X-API-Key'] = VITE_SLICR_API_KEY;
       }
       
-      // Attempt to download SRT
-      if (result.srtUrl) {
-           const srtDownloaded = await forceDownload(result.srtUrl, 'subtitles.srt');
-           if (srtDownloaded) downloaded = true; // Mark as downloaded even if only SRT
-      } else if (transcribeEnabled) {
-          console.warn("[API Export] Transcription requested but no srtUrl found in response.");
+      const processResponse = await fetch('/api/process', { // Use relative path
+        method: 'POST',
+        headers: processApiHeaders,
+        body: JSON.stringify(processApiPayload),
+      });
+
+      if (!processResponse.ok) {
+        const errorData = await processResponse.json().catch(() => ({ error: 'Processing API returned invalid response' }));
+        throw new Error(`Audio processing failed: ${processResponse.status} - ${errorData.error || processResponse.statusText}`);
       }
 
-      if (!downloaded) {
-        // If neither download succeeded
-        toast({ title: "Processing Complete", description: "Server processed the request but downloading failed.", variant: "default"});
-      }
+      const data = await processResponse.json();
+      console.log("[Export Audio] Step 3 successful. Process API response:", data);
 
-      // --- Clear status on completion --- 
-      setIsExportProcessing(false);
-      setExportStatusMessage("Export complete."); // Or clear: ""
-      // Optional: Clear message after a delay
-      // setTimeout(() => setExportStatusMessage(""), 3000);
-
-      // --- Remove old link handling --- 
-      /*
-      if (result.audioUrl) {
-          // ... old link creation ...
-      }
-      if (result.srtUrl) {
-          // ... old link creation ...
-      }
-      */
-      // --- End old link handling ---
-
-      // --- Remove old base64 handling --- 
-      /*
-      // Decode base64 data, create Blob, trigger download
-      if (result.files && result.files.length > 0) {
-        // TODO: Handle multiple files if exportAsSections is implemented in API
-        const fileInfo = result.files[0];
-        try {
-            const byteCharacters = atob(fileInfo.data);
-            const byteNumbers = new Array(byteCharacters.length);
-            for (let i = 0; i < byteCharacters.length; i++) {
-                byteNumbers[i] = byteCharacters.charCodeAt(i);
-            }
-            const byteArray = new Uint8Array(byteNumbers);
-            const blob = new Blob([byteArray], { type: 'audio/wav' }); // Assuming WAV for now
-
-            // Create a link and trigger download
-            const link = document.createElement('a');
-            link.href = URL.createObjectURL(blob);
-            link.download = fileInfo.filename || 'processed_audio.wav';
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            URL.revokeObjectURL(link.href); // Clean up object URL
-
-            toast({ title: "Download Started", description: `Downloading ${link.download}...` });
-
-        } catch (decodeError) {
-            console.error("Error decoding or downloading file:", decodeError);
-            toast({ title: "Download Error", description: "Failed to decode or prepare the downloaded file.", variant: "destructive"});
+      if (data.success && data.audioUrl) {
+        setExportStatusMessage("Export successful! Downloading...");
+        toast({
+          title: "Export Successful!",
+          description: "Your processed audio is downloading.",
+        });
+        // Trigger download
+        const filename = s3Key.substring(s3Key.lastIndexOf('/') + 1).replace(/^s3_input_\d+_/, 'processed_') + '.' + processingParams.exportFormat;
+        forceDownload(data.audioUrl, filename);
+        if (data.srtUrl) {
+            toast({ title: "SRT Generated", description: "SRT subtitles also downloading." });
+            const srtFilename = filename.replace(/\.[^/.]+$/, ".srt");
+            forceDownload(data.srtUrl, srtFilename);
         }
       } else {
-         toast({ title: "Processing Complete", description: "Server processed the request but returned no files.", variant: "default"});
-      }
-      */
-      // --- End old base64 handling ---
-
-      // --- Remove old local processing logic --- 
-      /*
-      // Get ALL deleted regions (auto + manual) directly from the Timeline component
-      const regionsToCut = timelineRef.current?.getDeletedRegions() ?? [];
-      regionsToCut.sort((a, b) => a.start - b.start); // Ensure sorted
-
-      const audibleSegments = calculateAudibleSegments(audioBuffer, regionsToCut);
-      console.log("Calculated audible segments based on ALL deleted regions:", audibleSegments);
-
-      if (exportAsSections) {
-          // --- Export Each Audible Segment Separately ---
-          let exportedCount = 0;
-          for (let i = 0; i < audibleSegments.length; i++) {
-              const seg = audibleSegments[i];
-              let segmentBuffer = await extractAudioSegment(audioBuffer, seg.start, seg.end, audioCtx);
-              
-              // Apply native speed change if rate is set
-              if (appliedPlaybackRate && appliedPlaybackRate !== 1) {
-                  console.log(`[Export Segments] Applying native speed change to segment ${i+1}...`);
-                  try {
-                      segmentBuffer = await performNativeSpeedChange(segmentBuffer, appliedPlaybackRate);
-                  } catch (processError) {
-                      toast({ title: "Processing Error", description: `Failed to apply speed change to segment ${i+1}. Exporting original speed.`, variant: "destructive"});
-                      // Re-extract original if processing failed
-                      segmentBuffer = await extractAudioSegment(audioBuffer, seg.start, seg.end, audioCtx); 
-                  }
-              }
-
-              await downloadAudioSegment(segmentBuffer, i + 1);
-              exportedCount++;
-          }
-          toast({ title: "Segment Export Complete!", description: `${exportedCount} segments exported.` });
-
-      } else {
-          // --- Export Single Combined Audio File ---
-          if (audibleSegments.length === 0) {
-              toast({ title: "Export Warning", description: "No audio content remaining after cuts.", variant: "destructive" });
-              setIsExportProcessing(false);
-              return;
-          }
-
-          // Combine audible segments into one buffer
-          let combinedBuffer = await combineAudioSegments(audioBuffer, audibleSegments, audioCtx);
-
-          // Apply native speed change if rate is set
-          if (appliedPlaybackRate && appliedPlaybackRate !== 1 && combinedBuffer) {
-              console.log("[Export Full] Applying native speed change to combined audio...");
-              try {
-                  combinedBuffer = await performNativeSpeedChange(combinedBuffer, appliedPlaybackRate);
-              } catch (processError) {
-                  toast({ title: "Processing Error", description: "Failed to apply speed change to audio. Exporting original speed.", variant: "destructive"});
-                  // Re-combine original if processing failed?
-                  combinedBuffer = await combineAudioSegments(audioBuffer, audibleSegments, audioCtx);
-              }
-          }
-
-          if (!combinedBuffer || combinedBuffer.length === 0) {
-             toast({ title: "Export Warning", description: "Resulting audio has zero length after processing.", variant: "destructive" });
-             setIsExportProcessing(false);
-             return;
-          }
-
-          // --- Log duration before download --- 
-           console.log(`[Export Full] Final combined buffer duration BEFORE download: ${combinedBuffer.duration.toFixed(3)}s. Expected (approx): ${audioBuffer.duration.toFixed(3)}s (minus cuts) / ${appliedPlaybackRate?.toFixed(2) ?? 1.0}`);
-           // -------------------------------------
-
-           // Convert final buffer (potentially stretched) to WAV and download
-           downloadCombinedAudio(combinedBuffer, "processed_audio.wav");
-           toast({ title: "Export Complete!", description: "Processed audio exported as single WAV file." });
+        throw new Error(data.error || "Processing completed but no audio URL was returned.");
       }
 
-      */
-      
-    } catch (error) {
-        console.error("Error during export process:", error);
-        toast({ title: "Export Error", description: `Failed to export: ${error instanceof Error ? error.message : 'Unknown error'}`, variant: "destructive" });
-        setIsExportProcessing(false); // Ensure loading stops on error
+    } catch (error: any) {
+      console.error("[Export Audio] Error during export process:", error);
+      setExportStatusMessage("Export failed. See console for details.");
+      toast({
+        title: "Export Error",
+        description: error.message || "An unknown error occurred during export.",
+        variant: "destructive",
+      });
     } finally {
-        setIsExportProcessing(false); // Ensure loading stops even on error
+      setIsExportProcessing(false);
+      // Do not clear status message immediately, let success/failure message persist briefly
+      // setTimeout(() => setExportStatusMessage(""), 5000);
     }
   };
 
@@ -1055,6 +815,57 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
       }
   }, [autoSelectMusic]);
   // ---------------------------------------------
+
+  // --- Add API Key from environment variables ---
+  const VITE_SLICR_API_KEY = import.meta.env.VITE_SLICR_API_KEY;
+  // ---------------------------------------------
+
+  // --- Helper Function to force download ---
+  const forceDownload = async (url: string, defaultFilename: string) => {
+      let downloadToastId: string | number | undefined = undefined; // Declare here
+      // Consider API key for download if files are not public?
+      // For now, assuming S3 URLs are publicly accessible or presigned for GET
+      try {
+          // Update status message for download
+          setExportStatusMessage(`Fetching ${defaultFilename}...`);
+          // Store the ID from the toast return value
+          const toastInstance = toast({ title: "Downloading...", description: `Fetching ${defaultFilename}...` });
+          downloadToastId = toastInstance?.id; // Assign here
+          const response = await fetch(url);
+          if (!response.ok) {
+              throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
+          }
+          const blob = await response.blob();
+          const objectUrl = URL.createObjectURL(blob);
+          
+          const link = document.createElement('a');
+          link.href = objectUrl;
+          const filename = url.substring(url.lastIndexOf('/') + 1) || defaultFilename;
+          link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          
+          // Revoke the object URL after a short delay
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 1000); 
+          // Dismiss using the hook's dismiss function
+          if (typeof downloadToastId === 'string') {
+            dismissToast(downloadToastId);
+          }
+          toast({ title: "Download Started", description: `Downloading ${filename}...` });
+          return true;
+      } catch (error) {
+          console.error(`Error forcing download for ${url}:`, error);
+          // Clear status on error
+          setExportStatusMessage("Error occurred.");
+          // Dismiss using the hook's dismiss function
+          if (typeof downloadToastId === 'string') {
+             dismissToast(downloadToastId);
+      }
+          toast({ title: "Download Error", description: `Could not download ${defaultFilename}. ${error instanceof Error ? error.message : 'Network error'}`, variant: "destructive" });
+          return false;
+      }
+  };
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -1505,7 +1316,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
                         {/* Export Button */} 
                         <div className="pt-0">
                                 <Button 
-                                    onClick={handleExportSegments} 
+                                    onClick={handleExportAudio} 
                                     disabled={!hasFile || !audioBuffer || isExportProcessing} 
                                     className="w-full"
                                 >

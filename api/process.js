@@ -70,26 +70,52 @@ try {
 // Keep Vercel specific config for compatibility if deploying there
 export const config = {
   api: {
-    bodyParser: false,
+    bodyParser: {
+      sizeLimit: '1mb', // Or a reasonable limit for JSON payload
+    }
   },
 };
 
-// Helper to download file from URL
-async function downloadFile(url, outputPath) {
-  const response = await axios({
-    method: 'GET',
-    url: url,
-    responseType: 'stream',
-  });
+// Helper to download file from URL (NO LONGER USED FOR PRIMARY INPUT)
+// async function downloadFile(url, outputPath) { ... } 
+// This helper might still be used for downloading music files, so we'll keep it
+// but comment out its direct usage for the main audio input if that was the case.
 
-  const writer = fs.createWriteStream(outputPath);
-  response.data.pipe(writer);
+// --- Helper: Download S3 Object to a temporary file path ---
+async function downloadS3Object(bucket, key, downloadPath) {
+  console.log(`[S3 Download] Attempting to download s3://${bucket}/${key} to ${downloadPath}`);
+  try {
+    const command = new GetObjectCommand({ Bucket: bucket, Key: key });
+    const response = await s3Client.send(command);
+    
+    // Ensure response.Body is a readable stream
+    if (!response.Body || typeof response.Body.pipe !== 'function') {
+      throw new Error('S3 response body is not a readable stream.');
+    }
 
-  return new Promise((resolve, reject) => {
-    writer.on('finish', resolve);
-    writer.on('error', reject);
-  });
+    const writer = fs.createWriteStream(downloadPath);
+    response.Body.pipe(writer);
+
+    return new Promise((resolve, reject) => {
+      writer.on('finish', () => {
+        console.log(`[S3 Download] Successfully downloaded s3://${bucket}/${key} to ${downloadPath}`);
+        resolve();
+      });
+      writer.on('error', (err) => {
+        console.error(`[S3 Download] Error writing file ${downloadPath}:`, err);
+        reject(err);
+      });
+      response.Body.on('error', (err) => { // Also catch errors on the S3 stream
+        console.error(`[S3 Download] Error on S3 stream for s3://${bucket}/${key}:`, err);
+        reject(err);
+      });
+    });
+  } catch (error) {
+    console.error(`[S3 Download] Failed to download from S3 (s3://${bucket}/${key}):`, error);
+    throw error; // Re-throw to be caught by the main handler
+  }
 }
+// --- End Helper ---
 
 // --- Helper Function: Generate SRT from Whisper Words ---
 // Revised formatTimestamp to preserve milliseconds
@@ -199,7 +225,7 @@ export default async function handler(req, res) {
   // Add CORS headers back (important for direct handling without Express/proxy)
   res.setHeader('Access-Control-Allow-Origin', '*'); // Adjust in production!
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Requested-With, X-API-Key'); // Include X-API-Key if used
 
   // Handle OPTIONS request for CORS preflight
   if (req.method === 'OPTIONS') {
@@ -208,12 +234,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const form = formidable({});
-  let fields;
-  let files;
-  let inputPath = null;
-  let downloadedTempPath = null;
-  let cleanupNeeded = false;
+  let inputPath = null; // This will now be the path to the S3-downloaded file in /tmp
+  let downloadedTempPath = null; // This specific variable might be reused or renamed for clarity
+  let cleanupNeeded = true; // Assume cleanup is always needed for the downloaded S3 file
   let params;
   let intermediateOutputPath = null;
   let finalOutputPath = null; 
@@ -228,110 +251,97 @@ export default async function handler(req, res) {
   let srtOutputPath = null;
   let s3SrtKey = null;
   let s3SrtUrl = null; // Declare s3SrtUrl in the outer scope
-  let finalExportFormat = 'wav';
-  let finalS3Key = '';
+  let finalExportFormat = 'wav'; // Default, can be overridden by params
+  let finalS3Key = ''; // This will be for the PROCESSED output
   let finalContentType = 'audio/wav';
   let pathToUpload = null; // Final path (mixed or not, converted or not) before S3 upload
   let fullTranscriptText = null;
 
   try {
-    // --- Get Input: File Upload OR URL --- 
-    [fields, files] = await new Promise((resolve, reject) => {
-      form.parse(req, (err, fields, files) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        resolve([fields, files]);
-      });
-    });
+    // --- Get Input: Expect s3Key and params from JSON body ---
+    // [fields, files] = await new Promise((resolve, reject) => { // REMOVE formidable parsing
+    //   form.parse(req, (err, fields, files) => {
+    //     if (err) {
+    //       reject(err);
+    //       return;
+    //     }
+    //     resolve([fields, files]);
+    //   });
+    // });
 
-    // Parameter Parsing (moved inside main try)
+    const { s3Key, params: rawParams } = req.body;
+
+    if (!s3Key || !rawParams) {
+      console.error('[API] Missing s3Key or params in request body.');
+      res.status(400).json({ success: false, error: 'Missing s3Key or params in request body' });
+      return;
+    }
+    
+    console.log(`[API] Received s3Key: ${s3Key}`);
+
+    // Parameter Parsing (from rawParams)
     try {
-        if (!fields.params || !fields.params[0]) {
-            throw new Error('Missing parameters');
+        // if (!fields.params || !fields.params[0]) { // OLD parsing from formidable fields
+        //     throw new Error('Missing parameters');
+        // }
+        // params = JSON.parse(fields.params[0]); // OLD parsing
+        if (typeof rawParams === 'string') { // If params is a string, parse it
+            params = JSON.parse(rawParams);
+        } else if (typeof rawParams === 'object') { // If params is already an object
+            params = rawParams;
+        } else {
+            throw new Error('Invalid parameters format. Expected object or JSON string.');
         }
-        params = JSON.parse(fields.params[0]); // Assign to outer scope params
-        console.log('[API] Received Params:', params);
+        console.log('[API] Received and Parsed Params:', params);
     } catch (err) {
         console.error('[API] Error parsing parameters:', err);
-        res.statusCode = 400;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ success: false, error: 'Invalid parameters format' }));
+        res.status(400).json({ success: false, error: 'Invalid parameters format' });
         return;
     }
 
-    if (files.audioFile && files.audioFile[0]) {
-        // Option 1: Use uploaded file
-        const inputFile = files.audioFile[0];
-        inputPath = inputFile.filepath; // Temporary path from formidable
-        cleanupNeeded = true; // Formidable might clean up, but good to track
-        console.log(`[API] Using uploaded file: ${inputPath}`);
-    } else if (fields.audioUrl && typeof fields.audioUrl[0] === 'string') {
-        // Option 2: Download from URL
-        const audioUrl = fields.audioUrl[0];
-        console.log(`[API] Attempting to download from URL: ${audioUrl}`);
-        try {
-            const tempFilename = `downloaded_${Date.now()}${path.extname(new URL(audioUrl).pathname) || '.tmp'}`;
-            downloadedTempPath = path.join(os.tmpdir(), tempFilename);
-            await downloadFile(audioUrl, downloadedTempPath);
-            inputPath = downloadedTempPath;
-            cleanupNeeded = true; // We definitely need to clean this up
-            console.log(`[API] Successfully downloaded to: ${inputPath}`);
-        } catch (downloadError) {
-            console.error('[API] Error downloading file:', downloadError);
-            res.statusCode = 400;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: false, error: 'Failed to download audio from URL' }));
-            if (downloadedTempPath && fs.existsSync(downloadedTempPath)) {
-                fs.unlinkSync(downloadedTempPath); // Clean up partial download
-            }
-            return;
-        }
-    } else {
-        // No valid input found
-        res.statusCode = 400;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ success: false, error: 'No audio file uploaded or audio URL provided' }));
-        return;
+    // --- Download the source file from S3 to a temporary location ---
+    // Use a unique name for the downloaded file in /tmp to avoid collisions
+    const tempDownloadedFileName = `s3_input_${Date.now()}_${path.basename(s3Key)}`;
+    downloadedTempPath = path.join(os.tmpdir(), tempDownloadedFileName); // Assign to outer scope for cleanup
+    inputPath = downloadedTempPath; // This is the path ffmpeg will use
+
+    await downloadS3Object(S3_BUCKET_NAME, s3Key, downloadedTempPath);
+    console.log(`[API] File from S3 key ${s3Key} downloaded to ${downloadedTempPath}`);
+    // --- End S3 Download ---
+
+    // Validate that the file was actually downloaded and is not empty
+    if (!fs.existsSync(inputPath) || fs.statSync(inputPath).size === 0) {
+        console.error(`[API] Downloaded file from S3 is missing or empty at ${inputPath}. Original S3 key: ${s3Key}`);
+        throw new Error('Failed to download or access the source file from S3.');
     }
-    // --- End Get Input ---
 
-  } catch (err) {
-    console.error('[API] Error processing input:', err);
-    res.statusCode = 400;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ success: false, error: 'Error processing input data' }));
-    return;
-  }
-
-  // At this point, inputPath should be valid
-  if (!inputPath) {
-       // This case should theoretically be caught above, but belt-and-suspenders
-       console.error("[API] Internal error: inputPath is null after input processing.");
-       res.statusCode = 500;
-       res.setHeader('Content-Type', 'application/json');
-       res.end(JSON.stringify({ success: false, error: 'Internal server error processing input' }));
-       return;
-  }
-   // And params should be valid
-  if (!params) {
-      console.error("[API] Internal error: params is null after input processing.");
-      res.statusCode = 500;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ success: false, error: 'Internal server error processing parameters' }));
-      return;
-  }
-
-  // Use a final variable for input path inside the next try block
-  const finalInputPath = inputPath;
-
-  try { // Wrap the main processing and cleanup
+    // --- Original file upload/URL logic (REMOVE/COMMENT OUT) ---
+    // if (files && files.audioFile && files.audioFile[0]) {
+    //   inputPath = files.audioFile[0].filepath;
+    //   console.log(`[API] Processing uploaded file: ${inputPath}`);
+    //   cleanupNeeded = false; 
+    // } else if (fields && fields.audioUrl && fields.audioUrl[0]) {
+    //   const audioUrl = fields.audioUrl[0];
+    //   console.log(`[API] Processing audio from URL: ${audioUrl}`);
+    //   const tempFileName = `download_${Date.now()}_${path.basename(new URL(audioUrl).pathname)}`;
+    //   downloadedTempPath = path.join(os.tmpdir(), tempFileName);
+    //   await downloadFile(audioUrl, downloadedTempPath);
+    //   inputPath = downloadedTempPath;
+    //   cleanupNeeded = true;
+    //   console.log(`[API] File downloaded to temporary path: ${inputPath}`);
+    // } else {
+    //   console.error('[API] No audio file uploaded and no audio URL provided.');
+    //   res.status(400).json({ success: false, error: 'No audio file or URL provided' });
+    //   return;
+    // }
+    // --- End Original file upload/URL logic ---
+    
+    // Determine finalExportFormat from params if provided, otherwise default
+    finalExportFormat = params.exportFormat === 'mp3' ? 'mp3' : 'wav';
+    console.log(`[API] Final export format set to: ${finalExportFormat}`);
 
     // --- Determine Output Paths --- 
-    const originalFilename = files?.audioFile?.[0]?.originalFilename 
-                              || (fields?.audioUrl?.[0] ? path.basename(new URL(fields.audioUrl[0]).pathname) : null) 
-                              || 'audio.wav'; 
+    const originalFilename = path.basename(s3Key); // Use S3 key's basename as original filename
     const safeOriginalFilename = originalFilename.replace(/[^a-z0-9_.-]/gi, '_');
     const baseOutputFilename = `processed_${path.parse(safeOriginalFilename).name}_${Date.now()}`;
     // Assign to outer scope variables
@@ -347,7 +357,7 @@ export default async function handler(req, res) {
     s3SrtKey = `${baseOutputFilename}_final.srt`;
     // -----------------------------
 
-    console.log(`[API] Input Path for Processing: ${finalInputPath}`);
+    console.log(`[API] Input Path for Processing: ${inputPath}`);
     console.log(`[API] Intermediate Output Path: ${intermediateOutputPath}`);
     console.log(`[API] Final Output Path: ${finalOutputPath}`);
     console.log(`[API] FFmpeg Path: ${ffmpegInstaller.path}`);
@@ -359,7 +369,6 @@ export default async function handler(req, res) {
     const rightPadding = parseFloat(params.rightPadding ?? 0.0332);
     const targetDurationParam = params.targetDuration ? parseFloat(params.targetDuration) : null;
     const transcribe = params.transcribe === true || params.transcribe === 'true';
-    finalExportFormat = (params.exportFormat === 'mp3') ? 'mp3' : 'wav';
     
     // --- Read New Music Params ---
     // Use the new names from the frontend request
@@ -379,7 +388,7 @@ export default async function handler(req, res) {
     // --- FFmpeg Pass 1: Silence Removal --- 
     console.log("[API] Starting Pass 1: Silence Removal...");
     await new Promise((resolve, reject) => {
-      let command = ffmpeg(finalInputPath);
+      let command = ffmpeg(inputPath);
       let complexFilter = [];
       const effectiveMinDuration = Math.max(0.01, minDuration - leftPadding - rightPadding);
       if (effectiveMinDuration < minDuration) {
@@ -508,7 +517,7 @@ export default async function handler(req, res) {
          wavPathToProcess = intermediateOutputPath;
     } else {
          console.warn("[API Base WAV] Neither final nor intermediate exist. Using original input, processing might fail if not audio.");
-         wavPathToProcess = finalInputPath; 
+         wavPathToProcess = inputPath; 
     }
     
     if (!wavPathToProcess || !fs.existsSync(wavPathToProcess)) {
@@ -1014,7 +1023,7 @@ Respond clearly with only the exact song title (no additional commentary or expl
       // --- Cleanup --- 
       console.log("[API] Starting cleanup...");
       const filesToDelete = [
-          downloadedTempPath,    // Original download (if URL)
+          downloadedTempPath,    // Original S3 download (if applicable)
           intermediateOutputPath, // Silence removal output
           finalOutputPath,       // Speed adjustment output
           whisperInputPath,      // Temp MP3 for Whisper

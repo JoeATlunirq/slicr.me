@@ -7,91 +7,136 @@ import CodeBlock from '@/components/CodeBlock'; // We'll create this helper next
 
 const ApiDocs: React.FC = () => {
 
-  const curlExample = `# --- Replace YOUR_API_KEY_HERE with the key from your .env (VITE_SLICR_API_KEY) --- 
-curl -X POST \
-  https://www.slicr.me/api/process \
-  -H 'X-API-Key: YOUR_API_KEY_HERE' \
-  -F 'audioFile=@/path/to/your/audio.wav' \
-  -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "targetDuration": 60.0, "transcribe": true, "exportFormat": "mp3", "addBackgroundMusic": true, "autoSelectMusicTrack": false, "selectedMusicTrackId": "your_track_id_here", "musicVolumeDb": -18}'
+  const curlExample = `# Step 1: Get a pre-signed URL
+# --- Replace YOUR_API_KEY_HERE if making direct API calls ---
+PRESIGNED_RESPONSE=$(curl -X POST \\
+  https://www.slicr.me/api/generate-upload-url \\
+  -H 'X-API-Key: YOUR_API_KEY_HERE' \\
+  -H 'Content-Type: application/json' \\
+  -d '{"fileName": "my_audio.mp3", "contentType": "audio/mpeg"}')
 
-# OR using URL and auto-select music:
-curl -X POST \
-  https://www.slicr.me/api/process \
-  -H 'X-API-Key: YOUR_API_KEY_HERE' \
-  -F 'audioUrl=https://example.com/audio.mp3' \
-  -F 'params={"thresholdDb": -40, "minDuration": 0.2, "leftPadding": 0.05, "rightPadding": 0.05, "targetDuration": null, "transcribe": false, "exportFormat": "wav", "addBackgroundMusic": true, "autoSelectMusicTrack": true, "musicVolumeDb": -15}'`;
+UPLOAD_URL=$(echo $PRESIGNED_RESPONSE | jq -r .uploadUrl)
+S3_KEY=$(echo $PRESIGNED_RESPONSE | jq -r .s3Key)
 
-  const jsExample = `// Replace 'YOUR_API_KEY_HERE' with the key from your .env (VITE_SLICR_API_KEY)
-const apiKey = 'YOUR_API_KEY_HERE'; 
+# Step 2: Upload the file directly to S3
+# Replace /path/to/your/audio.mp3 with the actual file path
+curl -X PUT -T "/path/to/your/audio.mp3" \\
+  -H "Content-Type: audio/mpeg" \\
+  "$UPLOAD_URL"
 
-// Option 1: Using File object
-const audioFile = /* get your File object */;
-const paramsFile = {
-    thresholdDb: -40,       
-    minDuration: 0.2,       
-    leftPadding: 0.05,      
-    rightPadding: 0.05,    
-    targetDuration: 60.0,   // Optional: Target duration > 0. Speeds up only.
-    transcribe: true,       // Optional: Set to true to generate SRT subtitles.
-    exportFormat: "mp3",    // Optional: 'wav' or 'mp3'. Default is 'wav'.
-    // --- Music Params --- 
-    addBackgroundMusic: true,       // Required if adding music
-    autoSelectMusicTrack: false,    // Optional: true to let server pick, false/omit for manual 
-    selectedMusicTrackId: "your_track_id_here", // Required if addBackgroundMusic=true AND autoSelectMusicTrack=false
-    musicVolumeDb: -18              // Optional: Target music volume relative to voice (dB). Default: -18dB
-};
-const formDataFile = new FormData();
-formDataFile.append('audioFile', audioFile);
-formDataFile.append('params', JSON.stringify(paramsFile));
-
-// Option 2: Using URL
-const audioUrl = "https://example.com/audio.mp3";
-const paramsUrl = {
-    thresholdDb: -40,       
-    minDuration: 0.2,       
-    leftPadding: 0.05,      
-    rightPadding: 0.05,    
-    targetDuration: null,   // Omit or null for no speed change.
-    transcribe: false,      // Default
-    exportFormat: "wav",    // Default
-    // --- Music Params --- 
-    addBackgroundMusic: true,
-    autoSelectMusicTrack: true,     // Auto-select track
-    musicVolumeDb: -15              // Adjust volume
-};
-const formDataUrl = new FormData();
-formDataUrl.append('audioUrl', audioUrl);
-formDataUrl.append('params', JSON.stringify(paramsUrl));
-
-// Choose formDataFile or formDataUrl
-const formData = formDataFile; // Or formDataUrl
-
-fetch('https://www.slicr.me/api/process', {
-    method: 'POST',
-    headers: {
-      // Add the required API Key header
-      'X-API-Key': apiKey
-    },
-    body: formData
-})
-.then(response => {
-    if (!response.ok) {
-        // Handle non-JSON error responses if necessary
-        return response.json().then(errData => Promise.reject(errData)).catch(() => { throw new Error(\`HTTP error! status: \${response.status}\`); });
+# Step 3: Process the file
+# --- Replace YOUR_API_KEY_HERE if making direct API calls ---
+curl -X POST \\
+  https://www.slicr.me/api/process \\
+  -H 'X-API-Key: YOUR_API_KEY_HERE' \\
+  -H 'Content-Type: application/json' \\
+  -d '{
+    "s3Key": "'"$S3_KEY"'",
+    "params": {
+      "thresholdDb": -40,
+      "minDuration": 0.2,
+      "leftPadding": 0.05,
+      "rightPadding": 0.05,
+      "targetDuration": 60.0,
+      "transcribe": true,
+      "exportFormat": "mp3",
+      "addBackgroundMusic": true,
+      "autoSelectMusicTrack": false,
+      "selectedMusicTrackId": "your_track_id_here",
+      "musicVolumeDb": -18
     }
-    return response.json();
-})
-.then(data => {
+  }'`;
+
+  const jsExample = `// Replace 'YOUR_API_KEY_HERE' if making direct API calls
+const apiKey = 'YOUR_API_KEY_HERE'; // Keep null if requests are from slicr.me UI
+
+async function processAudioWithSlicr(audioFile, processingParams) {
+  try {
+    // Step 1: Get a pre-signed URL from your backend
+    console.log("Step 1: Getting pre-signed URL...");
+    const presignedUrlResponse = await fetch('https://www.slicr.me/api/generate-upload-url', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // Add API key header if apiKey is set (for direct calls)
+        ...(apiKey && { 'X-API-Key': apiKey })
+      },
+      body: JSON.stringify({
+        fileName: audioFile.name,
+        contentType: audioFile.type
+      })
+    });
+
+    if (!presignedUrlResponse.ok) {
+      const errorData = await presignedUrlResponse.json().catch(() => ({ error: 'Failed to get pre-signed URL, invalid JSON response' }));
+      throw new Error(\`Failed to get pre-signed URL: \${presignedUrlResponse.status} \${errorData.error || presignedUrlResponse.statusText}\`);
+    }
+    const { uploadUrl, s3Key } = await presignedUrlResponse.json();
+    console.log("Pre-signed URL and s3Key obtained:", uploadUrl, s3Key);
+
+    // Step 2: Upload the file directly to S3 using the pre-signed URL
+    console.log("Step 2: Uploading file to S3...");
+    const s3UploadResponse = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': audioFile.type
+      },
+      body: audioFile
+    });
+
+    if (!s3UploadResponse.ok) {
+      throw new Error(\`S3 upload failed: \${s3UploadResponse.status} \${s3UploadResponse.statusText}\`);
+    }
+    console.log("File uploaded to S3 successfully.");
+
+    // Step 3: Call the process API with the s3Key
+    console.log("Step 3: Calling process API...");
+    const processResponse = await fetch('https://www.slicr.me/api/process', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // Add API key header if apiKey is set (for direct calls)
+        ...(apiKey && { 'X-API-Key': apiKey })
+      },
+      body: JSON.stringify({
+        s3Key: s3Key,
+        params: processingParams
+      })
+    });
+
+    if (!processResponse.ok) {
+      // Handle non-JSON error responses if necessary
+      const errorData = await processResponse.json().catch(() => ({ error: 'Processing failed, invalid JSON response' }));
+      throw new Error(\`Processing API error: \${processResponse.status} \${errorData.error || processResponse.statusText}\`);
+    }
+
+    const data = await processResponse.json();
     console.log('Success:', data);
     // data format: { success: true, audioUrl: string, srtUrl?: string }
-    // Use the URLs (e.g., trigger downloads)
-})
-.catch(error => {
-    console.error('Error:', error);
-    // error format: { success: false, error: string }
-});`;
+    return data;
 
-  const successResponseExample = `{
+  } catch (error) {
+    console.error('Error during Slicr processing:', error);
+    // error format: { success: false, error: string } or Error object
+    throw error;
+  }
+}
+
+// --- Example Usage ---
+// const myAudioFile = new File(["content"], "example.mp3", { type: "audio/mpeg" }); // Get your File object
+// const myParams = {
+//   thresholdDb: -40,
+//   minDuration: 0.2,
+//   transcribe: true,
+//   exportFormat: "mp3"
+// };
+
+// processAudioWithSlicr(myAudioFile, myParams)
+//   .then(result => console.log("Final Result:", result))
+//   .catch(err => console.error("Final Error:", err));
+`;
+
+  const successResponseProcessExample = `{
   "success": true,
   "audioUrl": "https://your-bucket-name.s3.your-region.amazonaws.com/processed_audio_1234567890.mp3",
   "srtUrl": "https://your-bucket-name.s3.your-region.amazonaws.com/processed_audio_1234567890.srt" // Only present if requested and successful
@@ -99,7 +144,18 @@ fetch('https://www.slicr.me/api/process', {
 
   const errorResponseExample = `{
   "success": false,
-  "error": "Error message describing the issue (e.g., 'No audio file uploaded', 'FFmpeg processing failed', 'Transcription failed')"
+  "error": "Error message describing the issue (e.g., 'Failed to download from S3', 'FFmpeg processing failed', 'Transcription failed')"
+}`;
+
+  const generateUrlSuccessResponseExample = `{
+  "success": true,
+  "uploadUrl": "https://your-s3-bucket.s3.your-region.amazonaws.com/uploads/your-unique-key.mp3?AWSAccessKeyId=...",
+  "s3Key": "uploads/your-unique-key.mp3"
+}`;
+
+  const generateUrlErrorResponseExample = `{
+  "success": false,
+  "error": "Missing fileName or contentType in request body."
 }`;
 
 
@@ -121,183 +177,121 @@ fetch('https://www.slicr.me/api/process', {
       <main className="container mx-auto px-4 py-8">
         <Card className="mb-6">
           <CardHeader>
-            <CardTitle>Endpoint: /api/process</CardTitle>
+            <CardTitle>Overview - New Upload Process</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <p>This endpoint processes an uploaded audio file or URL based on the provided parameters, performing silence removal, optional speed adjustment, optional transcription, and export format conversion.</p>
+            <p>To handle larger files and improve reliability, the Slicr.me API uses a three-step process for file uploads and processing:</p>
+            <ol className="list-decimal list-inside space-y-2">
+              <li>
+                <strong>Generate Upload URL:</strong> Your client requests a secure, pre-signed URL from the Slicr.me API specifically for uploading your audio file.
+              </li>
+              <li>
+                <strong>Upload to S3:</strong> Your client uses this pre-signed URL to upload the audio file directly to AWS S3. This bypasses limitations of sending large files through the main API server.
+              </li>
+              <li>
+                <strong>Process File:</strong> After the S3 upload is successful, your client notifies the Slicr.me API using the unique key associated with the S3 upload, along with your desired processing parameters. The API then fetches the file from S3 and processes it.
+              </li>
+            </ol>
+            <p className="text-sm text-muted-foreground">This multi-step approach is crucial for robustly handling potentially large audio files.</p>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Step 1: Generate Upload URL</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p>Request a pre-signed S3 URL to upload your audio file.</p>
             <ul>
               <li><strong>Method:</strong> <code className="bg-muted px-1 rounded">POST</code></li>
-              <li><strong>Content-Type:</strong> <code className="bg-muted px-1 rounded">multipart/form-data</code></li>
-              <li><strong>URL:</strong> <code className="bg-muted px-1 rounded">https://www.slicr.me/api/process</code> (Replace with your actual domain if different)</li>
-              <li><strong>Authentication:</strong> Requires an API key sent in the <code className="bg-muted px-1 rounded">X-API-Key</code> header.</li>
+              <li><strong>Content-Type:</strong> <code className="bg-muted px-1 rounded">application/json</code></li>
+              <li><strong>URL:</strong> <code className="bg-muted px-1 rounded">https://www.slicr.me/api/generate-upload-url</code></li>
+              <li><strong>Authentication:</strong> Requires an API key in the <code className="bg-muted px-1 rounded">X-API-Key</code> header for direct API calls (same as <code className="bg-muted px-1 rounded">/api/process</code>). Not needed if called from the official UI.</li>
+            </ul>
+            <h4 className="font-semibold mt-4">Request Body (JSON):</h4>
+            <CodeBlock language="json" code={`{\n  "fileName": "your_audio_file.mp3",\n  "contentType": "audio/mpeg"\n}`} />
+            <p className="text-sm text-muted-foreground"><code className="font-mono">fileName</code>: The desired name of your file. <br/><code className="font-mono">contentType</code>: The MIME type of your file (e.g., "audio/mpeg", "audio/wav").</p>
+
+            <h4 className="font-semibold mt-4">Success Response (Status Code 200):</h4>
+            <CodeBlock language="json" code={generateUrlSuccessResponseExample} />
+            <p className="text-sm text-muted-foreground">The <code className="bg-muted px-1 rounded">uploadUrl</code> is the pre-signed S3 URL you'll use for the PUT request in Step 2. The <code className="bg-muted px-1 rounded">s3Key</code> is the identifier you'll send to <code className="bg-muted px-1 rounded">/api/process</code> in Step 3.</p>
+
+            <h4 className="font-semibold mt-4">Error Response (Status Code 4xx or 5xx):</h4>
+            <CodeBlock language="json" code={generateUrlErrorResponseExample} />
+          </CardContent>
+        </Card>
+
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Step 2: Upload File Directly to S3</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p>Use the <code className="bg-muted px-1 rounded">uploadUrl</code> obtained from Step 1 to upload your audio file directly to AWS S3.</p>
+            <ul>
+              <li><strong>Method:</strong> <code className="bg-muted px-1 rounded">PUT</code></li>
+              <li><strong>URL:</strong> The <code className="bg-muted px-1 rounded">uploadUrl</code> from the <code className="bg-muted px-1 rounded">/api/generate-upload-url</code> response.</li>
+              <li><strong>Headers:</strong>
+                <ul className="list-disc list-inside ml-4">
+                  <li><code className="bg-muted px-1 rounded">Content-Type</code>: Must match the <code className="font-mono">contentType</code> you provided in Step 1 (e.g., "audio/mpeg").</li>
+                </ul>
+              </li>
+              <li><strong>Body:</strong> The raw binary data of your audio file.</li>
+            </ul>
+            <p className="text-sm text-muted-foreground">A successful upload will typically return an HTTP 200 OK status from S3 with an empty body or an ETag header.</p>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Step 3: Process File (Modified Endpoint)</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p>After successfully uploading the file to S3, call this endpoint to trigger the processing.</p>
+            <ul>
+              <li><strong>Method:</strong> <code className="bg-muted px-1 rounded">POST</code></li>
+              <li><strong>Content-Type:</strong> <code className="bg-muted px-1 rounded">application/json</code> (Note: No longer multipart/form-data)</li>
+              <li><strong>URL:</strong> <code className="bg-muted px-1 rounded">https://www.slicr.me/api/process</code></li>
+              <li><strong>Authentication:</strong> Requires an API key in the <code className="bg-muted px-1 rounded">X-API-Key</code> header for direct API calls.</li>
             </ul>
           </CardContent>
         </Card>
 
         <Card className="mb-6">
           <CardHeader>
-            <CardTitle>Authentication</CardTitle>
-          </CardHeader>
-          <CardContent>
-             <p>
-               Requests to the <code className="bg-muted px-1 rounded">/api/process</code> endpoint require authentication, handled differently based on the request source:
-             </p>
-             <ul className="list-disc list-inside mt-2 space-y-1">
-                <li>
-                    <strong>Requests from the official UI</strong> (e.g., <code className="bg-muted px-1 rounded">https://www.slicr.me</code>): Authentication is handled automatically based on the request origin. No explicit API key is needed when using the web application directly.
-                </li>
-                <li>
-                    <strong>Direct API Calls</strong> (e.g., from servers, scripts, tools like cURL/Postman): These requests MUST include a valid API key in the <code className="bg-muted px-1 rounded">X-API-Key</code> HTTP header.
-                </li>
-             </ul>
-             <p className="mt-3 text-sm text-muted-foreground">
-               Please contact the administrator if you require an API key for direct integration.
-             </p>
-          </CardContent>
-        </Card>
-
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle>Request Body (Form Data)</CardTitle>
+            <CardTitle>Request Body (JSON)</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <p>The request must be sent as <code className="bg-muted px-1 rounded">multipart/form-data</code> with the following fields:</p>
+            <p>The request body must be a JSON object with the following fields:</p>
             <ul className="list-disc list-inside space-y-2">
               <li>
-                <strong><code className="bg-muted px-1 rounded">audioFile</code></strong> OR <strong><code className="bg-muted px-1 rounded">audioUrl</code></strong> (Required - Provide ONE)
+                <strong><code className="bg-muted px-1 rounded">s3Key</code></strong> (Required - String)
                 <ul className="list-circle list-inside ml-4 text-sm text-muted-foreground">
-                  <li><code className="font-mono">audioFile</code>: The audio file blob to be processed.</li>
-                  <li><code className="font-mono">audioUrl</code>: A publicly accessible URL string pointing to the audio file.</li>
+                  <li>The <code className="font-mono">s3Key</code> returned by the <code className="bg-muted px-1 rounded">/api/generate-upload-url</code> endpoint after successful S3 pre-signed URL generation. This tells the server which file in S3 to process.</li>
+                  <li>Example: <code className="font-mono">"uploads/your-unique-key.mp3"</code></li>
                 </ul>
               </li>
               <li>
-                <strong><code className="bg-muted px-1 rounded">params</code></strong> (Required)
+                <strong><code className="bg-muted px-1 rounded">params</code></strong> (Required - Object)
                 <ul className="list-circle list-inside ml-4 text-sm text-muted-foreground">
-                  <li>A JSON string containing the processing parameters. See details below.</li>
+                  <li>A JSON object containing the processing parameters. See details in the table below.</li>
                 </ul>
               </li>
             </ul>
+             <h4 className="font-semibold mt-4">Example JSON Body:</h4>
+            <CodeBlock language="json" code={`{\n  "s3Key": "uploads/your-unique-key.mp3",\n  "params": {\n    "thresholdDb": -40,\n    "minDuration": 0.2,\n    "transcribe": true,\n    "exportFormat": "mp3"\n    // ... other parameters ...\n  }\n}`} />
           </CardContent>
         </Card>
 
         <Card className="mb-6">
           <CardHeader>
-            <CardTitle>Parameters Object (JSON String)</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-             <p>The <code className="bg-muted px-1 rounded">params</code> form field must contain a valid JSON string representing an object with the following keys:</p>
-             <table className="w-full text-sm border-collapse border border-border">
-               <thead>
-                 <tr className="bg-muted">
-                   <th className="border border-border p-2 text-left">Parameter</th>
-                   <th className="border border-border p-2 text-left">Type</th>
-                   <th className="border border-border p-2 text-left">Description</th>
-                   <th className="border border-border p-2 text-left">Example</th>
-                 </tr>
-               </thead>
-               <tbody>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">thresholdDb</code></td>
-                   <td className="border border-border p-2">Number</td>
-                   <td className="border border-border p-2">Silence threshold in dBFS. Audio below this level is considered silent. Range: -60 to 0.</td>
-                   <td className="border border-border p-2"><code className="font-mono">-40</code></td>
-                 </tr>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">minDuration</code></td>
-                   <td className="border border-border p-2">Number</td>
-                   <td className="border border-border p-2">Minimum duration (in seconds) for a segment to be considered silent.</td>
-                   <td className="border border-border p-2"><code className="font-mono">0.2</code></td>
-                 </tr>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">leftPadding</code></td>
-                   <td className="border border-border p-2">Number</td>
-                   <td className="border border-border p-2">Duration (in seconds) of silence to keep *before* the start of a detected silent section (effectively shortening the cut from the beginning).</td>
-                   <td className="border border-border p-2"><code className="font-mono">0.05</code></td>
-                 </tr>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">rightPadding</code></td>
-                   <td className="border border-border p-2">Number</td>
-                   <td className="border border-border p-2">Duration (in seconds) of silence to keep *after* the end of a detected silent section (effectively shortening the cut from the end).</td>
-                   <td className="border border-border p-2"><code className="font-mono">0.05</code></td>
-                 </tr>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">targetDuration</code></td>
-                   <td className="border border-border p-2">Number | null</td>
-                   <td className="border border-border p-2">Target final duration in seconds. If provided and shorter than the original duration, the audio will be sped up. Otherwise, speed is not changed.</td>
-                   <td className="border border-border p-2"><code className="font-mono">60.0</code> or <code className="font-mono">null</code></td>
-                 </tr>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">transcribe</code></td>
-                    <td className="border border-border p-2">Boolean</td>
-                   <td className="border border-border p-2">If true, attempts to generate word-level SRT subtitles using Whisper. (Default: false)</td>
-                   <td className="border border-border p-2"><code className="font-mono">true</code></td>
-                 </tr>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">exportFormat</code></td>
-                   <td className="border border-border p-2">String</td>
-                   <td className="border border-border p-2">Desired output format for the audio file. Options: 'wav' (default) or 'mp3'.</td>
-                   <td className="border border-border p-2"><code className="font-mono">"mp3"</code></td>
-                 </tr>
-                 {/* --- Music Parameters Start --- */}
-                 <tr className="bg-muted/50">
-                   <td colSpan={4} className="border border-border p-2 font-semibold">Music Parameters (Optional)</td>
-                 </tr>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">addBackgroundMusic</code></td>
-                   <td className="border border-border p-2">Boolean</td>
-                   <td className="border border-border p-2">Set to <code className="font-mono">true</code> to enable adding background music. (Default: <code className="font-mono">false</code>)</td>
-                   <td className="border border-border p-2"><code className="font-mono">true</code></td>
-                 </tr>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">autoSelectMusicTrack</code></td>
-                   <td className="border border-border p-2">Boolean</td>
-                   <td className="border border-border p-2">If <code className="font-mono">addBackgroundMusic</code> is true, set this to <code className="font-mono">true</code> to let the server attempt to automatically select a suitable track based on transcript content. (Default: <code className="font-mono">false</code>)</td>
-                   <td className="border border-border p-2"><code className="font-mono">true</code></td>
-                 </tr>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">selectedMusicTrackId</code></td>
-                   <td className="border border-border p-2">String | null</td>
-                   <td className="border border-border p-2">If <code className="font-mono">addBackgroundMusic</code> is true and <code className="font-mono">autoSelectMusicTrack</code> is false, provide the ID of the desired music track (obtained from NocoDB/Music Library).</td>
-                   <td className="border border-border p-2"><code className="font-mono">"your_track_id"</code></td>
-                 </tr>
-                 <tr>
-                   <td className="border border-border p-2"><code className="font-mono">musicVolumeDb</code></td>
-                   <td className="border border-border p-2">Number</td>
-                   <td className="border border-border p-2">If <code className="font-mono">addBackgroundMusic</code> is true, sets the target volume level for the background music relative to the main audio in dB. (Default: <code className="font-mono">-18</code>)</td>
-                   <td className="border border-border p-2"><code className="font-mono">-15</code></td>
-                 </tr>
-                  {/* --- Music Parameters End --- */}
-               </tbody>
-             </table>
-          </CardContent>
-        </Card>
-
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle>Example Requests</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-             <div>
-                <h4 className="font-semibold mb-2">cURL Example:</h4>
-                <CodeBlock language="bash" code={curlExample} />
-             </div>
-             <div>
-                <h4 className="font-semibold mb-2">JavaScript Fetch Example:</h4>
-                <CodeBlock language="javascript" code={jsExample} />
-             </div>
-          </CardContent>
-        </Card>
-
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle>Response Format</CardTitle>
+            <CardTitle>Response Format (for /api/process)</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
              <p>The API will respond with a JSON object.</p>
              <div>
                 <h4 className="font-semibold mb-2">Success (Status Code 200):</h4>
                  <p className="text-sm mb-2">Indicates successful processing. The <code className="bg-muted px-1 rounded">audioUrl</code> field contains a publicly accessible URL to the processed audio file (WAV or MP3) stored in AWS S3. If transcription was requested and successful, the <code className="bg-muted px-1 rounded">srtUrl</code> field will also be present.</p>
-                <CodeBlock language="json" code={successResponseExample} />
+                <CodeBlock language="json" code={successResponseProcessExample} />
              </div>
              <div>
                 <h4 className="font-semibold mb-2">Error (Status Code 4xx or 5xx):</h4>
