@@ -943,56 +943,72 @@ Respond clearly with only the exact song title (no additional commentary or expl
 
     // --- Final Conversion to Export Format (Conditional) --- 
     // Operates on basePathForExport (either original processed VO or the mixed audio)
-    pathToUpload = basePathForExport; // Default to the base path
+    pathToUpload = basePathForExport; // Default to the base path (likely WAV at this point)
+
     if (finalExportFormat === 'mp3') {
-        console.log(`[API Convert Export] Converting ${basePathForExport} to MP3 export format...`);
+        console.log(`[API Convert Export] Converting ${basePathForExport} to MP3 export format to ${mp3OutputPath}...`);
         try {
             await new Promise((resolve, reject) => {
-                ffmpeg(basePathForExport) // Input is the base path for export
+                ffmpeg(basePathForExport) 
                     .audioCodec('libmp3lame')
                     .audioBitrate('192k') 
                     .toFormat('mp3')
-                    .on('error', (err, stdout, stderr) => { /* ... error handling ... */ reject(err); })
-                    .on('end', () => { /* ... */ resolve(); })
-                    .save(mp3OutputPath); // Save to final MP3 export path
+                    .on('start', (cmd) => console.log(`[API Convert Export MP3] Spawned Ffmpeg: ${cmd}`))
+                    .on('error', (err, stdout, stderr) => {
+                        console.error('[API Convert Export MP3] FFmpeg Error:', err.message);
+                        console.error('[API Convert Export MP3] FFmpeg stderr:', stderr);
+                        reject(new Error(`Final MP3 conversion failed: ${err.message}`));
+                    })
+                    .on('end', () => {
+                        console.log('[API Convert Export MP3] FFmpeg final MP3 conversion finished successfully.');
+                        resolve();
+                    })
+                    .save(mp3OutputPath); 
              });
-             pathToUpload = mp3OutputPath; // Update path for upload
-             console.log(`[API Convert Export] Using MP3 export path for S3 upload: ${pathToUpload}`);
+            
+            // Check if MP3 conversion was successful and file exists
+            if (fs.existsSync(mp3OutputPath)) {
+                 pathToUpload = mp3OutputPath; // Update path for upload/stream to the new MP3
+                 console.log(`[API Convert Export] Successfully converted to MP3. Using path for S3 upload/binary stream: ${pathToUpload}`);
+            } else {
+                // This case implies the ffmpeg conversion failed silently or didn't produce output
+                console.error(`[API Convert Export] MP3 file not found at ${mp3OutputPath} after conversion attempt. Original WAV will be used.`);
+                // pathToUpload remains basePathForExport (the WAV file)
+                // Update finalContentType and finalS3Key if we are falling back to WAV
+                finalContentType = 'audio/wav'; 
+                // Re-calculate S3 key based on WAV if needed, though for binary this might not be strictly necessary for S3 key itself
+            }
         } catch (mp3ExportError) {
-             console.error("[API Convert Export] Failed to convert to MP3. Uploading original format instead.", mp3ExportError);
-             // Keep pathToUpload as basePathForExport
+             console.error("[API Convert Export] Error during MP3 conversion process. Original WAV will be used.", mp3ExportError);
+             // pathToUpload remains basePathForExport (the WAV file)
+             finalContentType = 'audio/wav';
         }
+    } else {
+         console.log(`[API Convert Export] Export format is WAV. Using path: ${pathToUpload}`);
     }
-    // Determine final S3 key/type *after* potential conversion
-    const finalExtension = path.extname(pathToUpload)?.substring(1) || finalExportFormat; // Get extension or use requested format
-    finalS3Key = `${baseOutputFilename}_final.${finalExtension}`;
-    finalContentType = finalExtension === 'mp3' ? 'audio/mpeg' : 'audio/wav';
-    console.log(`[API Upload Prep] Final S3 Key: ${finalS3Key}, ContentType: ${finalContentType}`);
+    // Determine final S3 key/type *after* potential conversion or fallback
+    const finalFileExtension = path.extname(pathToUpload)?.substring(1) || finalExportFormat;
+    finalS3Key = `${baseOutputFilename}_final.${finalFileExtension}`;
+    finalContentType = finalFileExtension === 'mp3' ? 'audio/mpeg' : 'audio/wav'; // Re-confirm content type based on actual pathToUpload
+    console.log(`[API Upload Prep] Final path for operation: ${pathToUpload}, S3 Key: ${finalS3Key}, ContentType: ${finalContentType}`);
     // --- End Final Conversion ---
 
     // --- Output Handling (S3 Upload or Direct Binary Response) --- 
     if (responseFormat === 'binary') {
         if (!fs.existsSync(pathToUpload)) {
             console.error(`[API Binary Response] Error: File not found at ${pathToUpload} for binary streaming.`);
-            // Check if headers already sent before trying to send error response
             if (!res.headersSent) {
                 res.status(500).json({ success: false, error: 'Processed file not found for binary response.'});
             }
-            // Ensure the response is ended if not already handled by error sending
-            if (!res.writableEnded) {
-                res.end();
-            }
-            // Early exit from this block if file not found
-            // The finally block will handle cleanup of other temp files.
+            if (!res.writableEnded) { res.end(); }
             return; 
         }
 
         console.log(`[API Binary Response] Preparing to stream binary file: ${pathToUpload}`);
-        const finalFileExtensionForBinary = path.extname(pathToUpload)?.substring(1) || finalExportFormat;
-        const binaryContentType = finalFileExtensionForBinary === 'mp3' ? 'audio/mpeg' : 'audio/wav';
-        const binaryFilename = `processed_audio_${Date.now()}.${finalFileExtensionForBinary}`;
+        const binaryContentTypeToUse = finalFileExtension === 'mp3' ? 'audio/mpeg' : 'audio/wav'; // Use determined extension
+        const binaryFilename = `processed_audio_${Date.now()}.${finalFileExtension}`;
 
-        res.setHeader('Content-Type', binaryContentType);
+        res.setHeader('Content-Type', binaryContentTypeToUse);
         res.setHeader('Content-Disposition', `attachment; filename="${binaryFilename}"`);
         
         const stats = fs.statSync(pathToUpload);
@@ -1000,29 +1016,43 @@ Respond clearly with only the exact song title (no additional commentary or expl
 
         const readStream = fs.createReadStream(pathToUpload);
         
-        // Pipe the stream to the response object.
-        // This handles backpressure and streams the data efficiently.
+        // Define cleanup function here to be accessible by stream events
+        const cleanupTempFiles = () => {
+            console.log("[API Binary Stream] Starting post-stream cleanup...");
+            const filesToDelete = [
+                downloadedTempPath, intermediateOutputPath, finalOutputPath,
+                whisperInputPath, tempMusicPath, normalizedMusicPath,
+                fadedMusicPath, trimmedMusicPath, mixedOutputPath, mp3OutputPath, srtOutputPath
+            ].filter(p => p); // Filter out null/undefined paths
+
+            filesToDelete.forEach(filePath => {
+                if (fs.existsSync(filePath)) {
+                    try {
+                        fs.unlinkSync(filePath);
+                        console.log(`[API Binary Stream Cleanup] Deleted: ${filePath}`);
+                    } catch (unlinkErr) {
+                        console.error(`[API Binary Stream Cleanup] Error deleting file ${filePath}:`, unlinkErr);
+                    }
+                }
+            });
+            console.log("[API Binary Stream Cleanup] Post-stream cleanup finished.");
+        };
+
         readStream.pipe(res);
 
         readStream.on('error', (err) => {
             console.error('[API Binary Response] Error streaming file:', err);
             if (!res.headersSent) {
-                // Try to send an error response if possible, though it might be too late if streaming started.
-                try {
-                    res.status(500).json({ success: false, error: 'Failed to stream file.' });
-                } catch (e) {
-                    console.error("[API Binary Response] Error sending error status after stream error:", e);
-                }
+                try { res.status(500).json({ success: false, error: 'Failed to stream file.' }); }
+                catch (e) { console.error("[API Binary Response] Error sending error status:", e); }
             }
-             // Ensure response is ended if not already by pipe error handling
-            if (!res.writableEnded) {
-                res.end();
-            }
+            if (!res.writableEnded) { res.end(); }
+            cleanupTempFiles(); // Cleanup on stream error
         });
 
         readStream.on('end', () => {
             console.log(`[API Binary Response] Binary file ${binaryFilename} streamed successfully.`);
-            // res.end() is called automatically by pipe when the readStream ends.
+            cleanupTempFiles(); // Cleanup on successful stream completion
         });
 
     } else { // Default 'url' responseFormat: Upload to S3 and send JSON response
@@ -1082,43 +1112,35 @@ Respond clearly with only the exact song title (no additional commentary or expl
   } catch (processError) {
     // --- Main Processing Error Handling --- 
     console.error('[API] Error during processing or response sending:', processError);
-    // Prevent sending response if headers already sent (e.g., by previous attempt)
     if (!res.headersSent) {
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ success: false, error: processError instanceof Error ? processError.message : 'Processing failed' }));
+        res.status(500).json({ success: false, error: processError instanceof Error ? processError.message : 'Processing failed' });
     } else {
         console.error('[API Catch Block] Headers already sent, could not send error response.');
     }
 
   } finally {
-      // --- Cleanup --- 
-      console.log("[API] Starting cleanup...");
-      const filesToDelete = [
-          downloadedTempPath,    // Original S3 download (if applicable)
-          intermediateOutputPath, // Silence removal output
-          finalOutputPath,       // Speed adjustment output
-          whisperInputPath,      // Temp MP3 for Whisper
-          tempMusicPath,         // Temp path for downloaded original music
-          normalizedMusicPath,   // Temp path for normalized music
-          fadedMusicPath,        // Temp path for faded music
-          trimmedMusicPath,      // Temp path for music trimmed to VO length
-          // adjustedMusicPath,  // Temp path for volume-adjusted music (Bypassed)
-          mixedOutputPath,       // Temp path for VO + Music mix
-          mp3OutputPath,         // Final export MP3 (if created)
-          srtOutputPath          // Generated SRT
-        ];
-      filesToDelete.forEach(filePath => {
-        if (filePath && fs.existsSync(filePath)) {
-            try {
-                fs.unlinkSync(filePath);
-                console.log(`[API Cleanup] Deleted: ${filePath}`);
-            } catch (unlinkErr) {
-                console.error(`[API Cleanup] Error deleting file ${filePath}:`, unlinkErr);
-            }
-        }
-      });
-      console.log("[API Cleanup] Cleanup finished.");
-      // --- End Cleanup ---
+      // Conditional cleanup for non-binary responses or if binary stream setup failed before stream events registered
+      if (responseFormat !== 'binary') {
+          console.log("[API Main Finally] Starting cleanup (URL response or pre-stream error)...");
+          const filesToDelete = [
+              downloadedTempPath, intermediateOutputPath, finalOutputPath,
+              whisperInputPath, tempMusicPath, normalizedMusicPath,
+              fadedMusicPath, trimmedMusicPath, mixedOutputPath, mp3OutputPath, srtOutputPath
+          ].filter(p => p); // Filter out null/undefined paths
+
+          filesToDelete.forEach(filePath => {
+              if (filePath && fs.existsSync(filePath)) {
+                  try {
+                      fs.unlinkSync(filePath);
+                      console.log(`[API Main Finally Cleanup] Deleted: ${filePath}`);
+                  } catch (unlinkErr) {
+                      console.error(`[API Main Finally Cleanup] Error deleting file ${filePath}:`, unlinkErr);
+                  }
+              }
+          });
+          console.log("[API Main Finally] Cleanup finished (URL response or pre-stream error).");
+      } else {
+          console.log("[API Main Finally] Skipping general cleanup for binary stream (handled by stream events if stream started).");
+      }
   }
 }
