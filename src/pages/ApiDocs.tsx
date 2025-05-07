@@ -301,6 +301,182 @@ async function processAudioWithSlicr(audioFile, processingParams) {
           </CardContent>
         </Card>
 
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Processing Parameters</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p>The <code className="bg-muted px-1 rounded">params</code> object in the request body must contain the following fields:</p>
+            <table className="border-collapse border border-border w-full">
+              <tbody>
+                <tr>
+                  <td className="border border-border p-2"><code className="font-mono">thresholdDb</code></td>
+                  <td className="border border-border p-2">Number</td>
+                  <td className="border border-border p-2">The threshold in decibels (dB) for detecting speech. Lower values detect more speech.</td>
+                  <td className="border border-border p-2"><code className="font-mono">-40</code></td>
+                </tr>
+                <tr>
+                  <td className="border border-border p-2"><code className="font-mono">minDuration</code></td>
+                  <td className="border border-border p-2">Number</td>
+                  <td className="border border-border p-2">The minimum duration of speech in seconds.</td>
+                  <td className="border border-border p-2"><code className="font-mono">0.2</code></td>
+                </tr>
+                <tr>
+                  <td className="border border-border p-2"><code className="font-mono">leftPadding</code></td>
+                  <td className="border border-border p-2">Number</td>
+                  <td className="border border-border p-2">The left padding in seconds before the detected speech.</td>
+                  <td className="border border-border p-2"><code className="font-mono">0.05</code></td>
+                </tr>
+                <tr>
+                  <td className="border border-border p-2"><code className="font-mono">rightPadding</code></td>
+                  <td className="border border-border p-2">Number</td>
+                  <td className="border border-border p-2">The right padding in seconds after the detected speech.</td>
+                  <td className="border border-border p-2"><code className="font-mono">0.05</code></td>
+                </tr>
+                <tr>
+                  <td className="border border-border p-2"><code className="font-mono">targetDuration</code></td>
+                  <td className="border border-border p-2">Number</td>
+                  <td className="border border-border p-2">The target duration of the processed audio in seconds.</td>
+                  <td className="border border-border p-2"><code className="font-mono">60.0</code></td>
+                </tr>
+                <tr>
+                  <td className="border border-border p-2"><code className="font-mono">transcribe</code></td>
+                  <td className="border border-border p-2">Boolean</td>
+                  <td className="border border-border p-2">Set to <code className="font-mono">true</code> to enable transcription.</td>
+                  <td className="border border-border p-2"><code className="font-mono">true</code></td>
+                </tr>
+                <tr>
+                  <td className="border border-border p-2"><code className="font-mono">exportFormat</code></td>
+                  <td className="border border-border p-2">String</td>
+                  <td className="border border-border p-2">Desired output format for the audio file. Options: 'wav' (default) or 'mp3'.</td>
+                  <td className="border border-border p-2"><code className="font-mono">"mp3"</code></td>
+                </tr>
+                {/* --- Music Parameters Start --- */}
+                <tr className="bg-muted/50">
+                  <td colSpan={4} className="border border-border p-2 font-semibold">Music Parameters (All are optional; only used if <code className="font-mono">addBackgroundMusic</code> is true)</td>
+                </tr>
+                <tr>
+                  <td className="border border-border p-2"><code className="font-mono">addBackgroundMusic</code></td>
+                  <td className="border border-border p-2">Boolean</td>
+                  <td className="border border-border p-2">Set to <code className="font-mono">true</code> to enable adding background music. (Default: <code className="font-mono">false</code>)</td>
+                  <td className="border border-border p-2"><code className="font-mono">true</code></td>
+                </tr>
+                <tr>
+                  <td className="border border-border p-2"><code className="font-mono">autoSelectMusicTrack</code></td>
+                  <td className="border border-border p-2">Boolean</td>
+                  <td className="border border-border p-2">Only relevant if <code className="font-mono">addBackgroundMusic</code> is true. If true, the server attempts to automatically select a suitable track. (Default: <code className="font-mono">false</code>)</td>
+                  <td className="border border-border p-2"><code className="font-mono">true</code></td>
+                </tr>
+                <tr>
+                  <td className="border border-border p-2"><code className="font-mono">selectedMusicTrackId</code></td>
+                  <td className="border border-border p-2">String | null</td>
+                  <td className="border border-border p-2">Only relevant if <code className="font-mono">addBackgroundMusic</code> is true and <code className="font-mono">autoSelectMusicTrack</code> is false. Provide the ID of the desired music track.</td>
+                  <td className="border border-border p-2"><code className="font-mono">"your_track_id"</code></td>
+                </tr>
+                <tr>
+                  <td className="border border-border p-2"><code className="font-mono">musicVolumeDb</code></td>
+                  <td className="border border-border p-2">Number</td>
+                  <td className="border border-border p-2">Only relevant if <code className="font-mono">addBackgroundMusic</code> is true. Sets the target volume level for the background music relative to the main audio in dB. (Default: <code className="font-mono">-18</code>)</td>
+                  <td className="border border-border p-2"><code className="font-mono">-15</code></td>
+                </tr>
+                 {/* --- Music Parameters End --- */}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Parameters Object (JSON String)</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+             <p>The <code className="bg-muted px-1 rounded">params</code> object, nested within the JSON body of the request to <code className="bg-muted px-1 rounded">/api/process</code>, must contain a valid JSON object with the following keys:</p>
+             <table className="w-full text-sm border-collapse border border-border">
+               <thead>
+                 <tr className="bg-muted">
+                   <th className="border border-border p-2 text-left">Parameter</th>
+                   <th className="border border-border p-2 text-left">Type</th>
+                   <th className="border border-border p-2 text-left">Description</th>
+                   <th className="border border-border p-2 text-left">Example</th>
+                 </tr>
+               </thead>
+               <tbody>
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">thresholdDb</code></td>
+                   <td className="border border-border p-2">Number</td>
+                   <td className="border border-border p-2">Silence threshold in dBFS. Audio below this level is considered silent. Range: -60 to 0.</td>
+                   <td className="border border-border p-2"><code className="font-mono">-40</code></td>
+                 </tr>
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">minDuration</code></td>
+                   <td className="border border-border p-2">Number</td>
+                   <td className="border border-border p-2">Minimum duration (in seconds) for a segment to be considered silent.</td>
+                   <td className="border border-border p-2"><code className="font-mono">0.2</code></td>
+                 </tr>
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">leftPadding</code></td>
+                   <td className="border border-border p-2">Number</td>
+                   <td className="border border-border p-2">Duration (in seconds) of silence to keep *before* a detected silent section (shortens cut from start).</td>
+                   <td className="border border-border p-2"><code className="font-mono">0.05</code></td>
+                 </tr>
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">rightPadding</code></td>
+                   <td className="border border-border p-2">Number</td>
+                   <td className="border border-border p-2">Duration (in seconds) of silence to keep *after* a detected silent section (shortens cut from end).</td>
+                   <td className="border border-border p-2"><code className="font-mono">0.05</code></td>
+                 </tr>
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">targetDuration</code></td>
+                   <td className="border border-border p-2">Number | null</td>
+                   <td className="border border-border p-2">Target final duration in seconds. If provided and audio is longer, it will be sped up. <code className="font-mono">null</code> for no speed change.</td>
+                   <td className="border border-border p-2"><code className="font-mono">60.0</code> or <code className="font-mono">null</code></td>
+                 </tr>
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">transcribe</code></td>
+                    <td className="border border-border p-2">Boolean</td>
+                   <td className="border border-border p-2">If true, attempts to generate word-level SRT subtitles using Whisper. (Default: false)</td>
+                   <td className="border border-border p-2"><code className="font-mono">true</code></td>
+                 </tr>
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">exportFormat</code></td>
+                   <td className="border border-border p-2">String</td>
+                   <td className="border border-border p-2">Desired output format. Options: 'wav' (default) or 'mp3'.</td>
+                   <td className="border border-border p-2"><code className="font-mono">"mp3"</code></td>
+                 </tr>
+                 {/* --- Music Parameters Start --- */}
+                 <tr className="bg-muted/50">
+                   <td colSpan={4} className="border border-border p-2 font-semibold">Music Parameters</td>
+                 </tr>
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">addBackgroundMusic</code></td>
+                   <td className="border border-border p-2">Boolean</td>
+                   <td className="border border-border p-2">Set to <code className="font-mono">true</code> to enable adding background music. (Default: <code className="font-mono">false</code>)</td>
+                   <td className="border border-border p-2"><code className="font-mono">true</code></td>
+                 </tr>
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">autoSelectMusicTrack</code></td>
+                   <td className="border border-border p-2">Boolean</td>
+                   <td className="border border-border p-2">Only if <code className="font-mono">addBackgroundMusic</code> is true. If true, server attempts auto-selection. (Default: <code className="font-mono">false</code>)</td>
+                   <td className="border border-border p-2"><code className="font-mono">true</code></td>
+                 </tr>
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">selectedMusicTrackId</code></td>
+                   <td className="border border-border p-2">String | null</td>
+                   <td className="border border-border p-2">Only if <code className="font-mono">addBackgroundMusic</code> is true and <code className="font-mono">autoSelectMusicTrack</code> is false. Provide the ID of the desired music track.</td>
+                   <td className="border border-border p-2"><code className="font-mono">"your_track_id"</code></td>
+                 </tr>
+                 <tr>
+                   <td className="border border-border p-2"><code className="font-mono">musicVolumeDb</code></td>
+                   <td className="border border-border p-2">Number</td>
+                   <td className="border border-border p-2">Only if <code className="font-mono">addBackgroundMusic</code> is true. Target music volume relative to voice (dB). (Default: <code className="font-mono">-18</code>)</td>
+                   <td className="border border-border p-2"><code className="font-mono">-15</code></td>
+                 </tr>
+                  {/* --- Music Parameters End --- */}
+               </tbody>
+             </table>
+          </CardContent>
+        </Card>
+
       </main>
     </div>
   );

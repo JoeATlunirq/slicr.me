@@ -446,8 +446,8 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
   const handleExportAudio = async () => {
     if (!originalFile) {
       toast({ title: "Error", description: "No audio file loaded or original file not found.", variant: "destructive" });
-      setIsExportProcessing(false);
-      return;
+        setIsExportProcessing(false);
+        return;
     }
 
     setIsExportProcessing(true);
@@ -456,15 +456,15 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
     // --- Prepare processing parameters ---
     const finalDeletedRegions = getFinalDeletedRegions(); // Get combined regions
     const processingParams = {
-      thresholdDb: thresholdDb[0],
-      minDuration: minDuration[0],
-      leftPadding: leftPadding[0],
-      rightPadding: rightPadding[0],
+        thresholdDb: thresholdDb[0],
+        minDuration: minDuration[0],
+        leftPadding: leftPadding[0],
+        rightPadding: rightPadding[0],
       targetDuration: targetDuration, // from state
       transcribe: transcribeEnabled, // from state
       exportFormat: exportFormat,   // from state
       // Music parameters
-      addBackgroundMusic: addMusicEnabled,
+        addBackgroundMusic: addMusicEnabled,
       autoSelectMusicTrack: autoSelectMusic,
       selectedMusicTrackId: selectedMusicTrackId,
       musicVolumeDb: musicVolumeDb[0],
@@ -491,7 +491,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
       }
 
       const presignedUrlResponse = await fetch('/api/generate-upload-url', { // Use relative path for Vercel
-        method: 'POST',
+          method: 'POST',
         headers: generateUrlHeaders,
         body: JSON.stringify(generateUrlPayload),
       });
@@ -584,7 +584,7 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
         variant: "destructive",
       });
     } finally {
-      setIsExportProcessing(false);
+              setIsExportProcessing(false);
       // Do not clear status message immediately, let success/failure message persist briefly
       // setTimeout(() => setExportStatusMessage(""), 5000);
     }
