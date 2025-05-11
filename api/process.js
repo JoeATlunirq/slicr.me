@@ -1093,9 +1093,9 @@ Respond clearly with only the exact song title (no additional commentary or expl
 
       // If a binary response was successfully initiated for streaming, 
       // its specific cleanup is handled by the stream 'close' event, so exclude it here.
-      if (params && params.responseFormat === 'binary' && params.transcribe === false && finalAudioLocalPathForStream) {
-          console.log(`[API Main Finally] Excluding ${finalAudioLocalPathForStream} from general cleanup as it's handled by stream events.`);
-          filesToDelete = filesToDelete.filter(p => p !== finalAudioLocalPathForStream);
+      if (params && params.responseFormat === 'binary' && params.transcribe === false && pathToUpload) {
+          console.log(`[API Main Finally] Excluding ${pathToUpload} from general cleanup as it's handled by stream events.`);
+          filesToDelete = filesToDelete.filter(p => p !== pathToUpload);
       }
 
       filesToDelete = filesToDelete.filter(p => p); // Filter out null/undefined paths
