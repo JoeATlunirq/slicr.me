@@ -1005,59 +1005,49 @@ Respond clearly with only the exact song title (no additional commentary or expl
     console.log(`[Response Prep] Final S3 key for audio response: ${finalAudioS3KeyForResponse}`);
     console.log(`[Response Prep] Final local path for potential binary stream: ${finalAudioLocalPathForStream}`);
 
-    // --- Prepare Success Response Object ---
-    const successResponse = {
-      success: true,
-      audioUrl: `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalAudioS3KeyForResponse}`
-    };
-
-    if (s3SrtUrl) { // If SRT was generated and uploaded, s3SrtUrl will be its full URL
-      successResponse.srtUrl = s3SrtUrl;
-      console.log(`[API Success] Transcription successful. Adding SRT URL to response: ${successResponse.srtUrl}`);
-    }
-    // --- End Prepare Success Response Object ---
-
-    // --- Send Response Based on transcribe and responseFormat ---
-    if (params.transcribe) {
-      console.log("[API Success] Transcription requested. Sending JSON response with URLs.");
-      res.statusCode = 200;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify(successResponse));
-    } else if (params.responseFormat === 'binary' && finalAudioLocalPathForStream && fs.existsSync(finalAudioLocalPathForStream)) {
-      // Only stream binary if transcription was NOT requested AND responseFormat is binary AND file exists
+    // --- Send Response Based on responseFormat, conditionally adding SRT info ---
+    if (params.responseFormat === 'binary' && finalAudioLocalPathForStream && fs.existsSync(finalAudioLocalPathForStream)) {
       console.log(`[API Success] responseFormat is binary. Streaming file: ${finalAudioLocalPathForStream}`);
       res.statusCode = 200;
-      // Set content type based on the finalContentType determined after all processing
       const streamContentType = finalContentType || (params.exportFormat === 'mp3' ? 'audio/mpeg' : 'application/octet-stream');
       res.setHeader('Content-Type', streamContentType);
-      // Optional: Add Content-Disposition if you want to suggest a filename
-      // const downloadFileName = path.basename(finalAudioLocalPathForStream);
-      // res.setHeader('Content-Disposition', `attachment; filename="${downloadFileName}"`);
+
+      // If transcription was done and SRT URL is available, add it as a custom header
+      if (params.transcribe && s3SrtUrl) {
+        res.setHeader('X-Srt-Url', s3SrtUrl);
+        console.log(`[API Success] Binary response. Adding X-Srt-Url header: ${s3SrtUrl}`);
+      }
       
       const readStream = fs.createReadStream(finalAudioLocalPathForStream);
       readStream.pipe(res);
 
-      // Ensure the response is ended after the stream finishes or errors
       readStream.on('end', () => {
         console.log('[API Success] Binary stream ended.');
-        // res.end(); // res.end() is implicitly called by pipe on end.
       });
       readStream.on('error', (streamError) => {
         console.error('[API Error] Error streaming binary file:', streamError);
-        // Don't try to set headers/status if already sent
         if (!res.headersSent) {
           res.statusCode = 500;
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ success: false, error: 'Failed to stream processed file.' }));
         } else {
-          // If headers already sent, we might just have to abruptly end or log.
-          // Node's HTTP response might handle this by closing the connection.
           res.end();
         }
       });
     } else {
-      // Default to JSON response with URLs if not binary or if binary streaming conditions not met
-      console.log("[API Success] Sending JSON response with URLs (default or binary conditions not met).");
+      // Default to JSON response (if responseFormat is 'url' or not 'binary', or if binary stream conditions not met)
+      const successResponse = {
+        success: true,
+        audioUrl: `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalAudioS3KeyForResponse}`
+      };
+
+      // If transcription was done and SRT URL is available, add it to the JSON response
+      if (params.transcribe && s3SrtUrl) {
+        successResponse.srtUrl = s3SrtUrl;
+        console.log(`[API Success] JSON response. Transcription successful. Adding SRT URL: ${successResponse.srtUrl}`);
+      }
+      
+      console.log("[API Success] Sending JSON response with URLs.");
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify(successResponse));
