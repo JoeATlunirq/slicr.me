@@ -1005,52 +1005,58 @@ Respond clearly with only the exact song title (no additional commentary or expl
     console.log(`[Response Prep] Final S3 key for audio response: ${finalAudioS3KeyForResponse}`);
     console.log(`[Response Prep] Final local path for potential binary stream: ${finalAudioLocalPathForStream}`);
 
-    // --- Send Response Based on responseFormat, conditionally adding SRT info ---
-    if (params.responseFormat === 'binary' && finalAudioLocalPathForStream && fs.existsSync(finalAudioLocalPathForStream)) {
-      console.log(`[API Success] responseFormat is binary. Streaming file: ${finalAudioLocalPathForStream}`);
-      res.statusCode = 200;
-      const streamContentType = finalContentType || (params.exportFormat === 'mp3' ? 'audio/mpeg' : 'application/octet-stream');
-      res.setHeader('Content-Type', streamContentType);
-
-      // If transcription was done and SRT URL is available, add it as a custom header
-      if (params.transcribe && s3SrtUrl) {
-        res.setHeader('X-Srt-Url', s3SrtUrl);
-        console.log(`[API Success] Binary response. Adding X-Srt-Url header: ${s3SrtUrl}`);
-      }
-      
-      const readStream = fs.createReadStream(finalAudioLocalPathForStream);
-      readStream.pipe(res);
-
-      readStream.on('end', () => {
-        console.log('[API Success] Binary stream ended.');
-      });
-      readStream.on('error', (streamError) => {
-        console.error('[API Error] Error streaming binary file:', streamError);
-        if (!res.headersSent) {
-          res.statusCode = 500;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: false, error: 'Failed to stream processed file.' }));
-        } else {
-          res.end();
-        }
-      });
-    } else {
-      // Default to JSON response (if responseFormat is 'url' or not 'binary', or if binary stream conditions not met)
+    // --- Send Response ---
+    if (params.transcribe) {
+      // If transcription is requested, always return JSON with audioUrl and srtUrl (if available)
       const successResponse = {
         success: true,
         audioUrl: `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalAudioS3KeyForResponse}`
       };
-
-      // If transcription was done and SRT URL is available, add it to the JSON response
-      if (params.transcribe && s3SrtUrl) {
+      if (s3SrtUrl) { // s3SrtUrl is the full URL to the SRT file, populated if transcription was successful
         successResponse.srtUrl = s3SrtUrl;
-        console.log(`[API Success] JSON response. Transcription successful. Adding SRT URL: ${successResponse.srtUrl}`);
+        console.log(`[API Success] Transcription true. JSON response. Adding SRT URL: ${s3SrtUrl}`);
+      } else {
+        console.log(`[API Success] Transcription true, but no SRT URL was generated (transcription might have failed or produced no SRT).`);
       }
-      
-      console.log("[API Success] Sending JSON response with URLs.");
+      console.log("[API Success] Transcription requested. Sending JSON response with URLs.");
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify(successResponse));
+    } else {
+      // If transcription is NOT requested, then respect responseFormat
+      if (params.responseFormat === 'binary' && finalAudioLocalPathForStream && fs.existsSync(finalAudioLocalPathForStream)) {
+        console.log(`[API Success] Transcription false, responseFormat is binary. Streaming file: ${finalAudioLocalPathForStream}`);
+        res.statusCode = 200;
+        const streamContentType = finalContentType || (params.exportFormat === 'mp3' ? 'audio/mpeg' : 'application/octet-stream');
+        res.setHeader('Content-Type', streamContentType);
+        
+        const readStream = fs.createReadStream(finalAudioLocalPathForStream);
+        readStream.pipe(res);
+
+        readStream.on('end', () => {
+          console.log('[API Success] Binary stream ended.');
+        });
+        readStream.on('error', (streamError) => {
+          console.error('[API Error] Error streaming binary file:', streamError);
+          if (!res.headersSent) {
+            res.statusCode = 500;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: false, error: 'Failed to stream processed file.' }));
+          } else {
+            res.end();
+          }
+        });
+      } else {
+        // Default to JSON response with only audioUrl (transcription false, responseFormat is 'url' or binary conditions not met)
+        const successResponse = {
+          success: true,
+          audioUrl: `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalAudioS3KeyForResponse}`
+        };
+        console.log("[API Success] Transcription false. Sending JSON response with audioUrl.");
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(successResponse));
+      }
     }
 
   } catch (processError) {
