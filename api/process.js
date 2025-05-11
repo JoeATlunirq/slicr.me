@@ -1038,18 +1038,18 @@ Respond clearly with only the exact song title (no additional commentary or expl
         });
         readStream.on('error', (streamError) => {
           console.error('[API Error] Error streaming binary file:', streamError);
-          if (!res.headersSent) {
+             if (!res.headersSent) {
             res.statusCode = 500;
             res.setHeader('Content-Type', 'application/json');
             res.end(JSON.stringify({ success: false, error: 'Failed to stream processed file.' }));
           } else {
-            res.end();
-          }
+                res.end();
+            }
         });
       } else {
         // Default to JSON response with only audioUrl (transcription false, responseFormat is 'url' or binary conditions not met)
         const successResponse = {
-          success: true,
+            success: true,
           audioUrl: `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalAudioS3KeyForResponse}`
         };
         console.log("[API Success] Transcription false. Sending JSON response with audioUrl.");
@@ -1069,28 +1069,23 @@ Respond clearly with only the exact song title (no additional commentary or expl
     }
 
   } finally {
-      // Conditional cleanup for non-binary responses or if binary stream setup failed before stream events registered
-      if (responseFormat !== 'binary') {
-          console.log("[API Main Finally] Starting cleanup (URL response or pre-stream error)...");
-          const filesToDelete = [
-              downloadedTempPath, intermediateOutputPath, finalOutputPath,
-              whisperInputPath, tempMusicPath, normalizedMusicPath,
-              fadedMusicPath, trimmedMusicPath, mixedOutputPath, mp3OutputPath, srtOutputPath
-          ].filter(p => p); // Filter out null/undefined paths
+      console.log("[API Main Finally] Starting cleanup for all temporary files...");
+      const filesToDelete = [
+          downloadedTempPath, intermediateOutputPath, finalOutputPath,
+          whisperInputPath, tempMusicPath, normalizedMusicPath,
+          fadedMusicPath, trimmedMusicPath, mixedOutputPath, mp3OutputPath, srtOutputPath
+      ].filter(p => p); // Filter out null/undefined paths
 
-          filesToDelete.forEach(filePath => {
-              if (filePath && fs.existsSync(filePath)) {
-                  try {
-                      fs.unlinkSync(filePath);
-                      console.log(`[API Main Finally Cleanup] Deleted: ${filePath}`);
-                  } catch (unlinkErr) {
-                      console.error(`[API Main Finally Cleanup] Error deleting file ${filePath}:`, unlinkErr);
-                  }
+      filesToDelete.forEach(filePath => {
+          if (filePath && fs.existsSync(filePath)) {
+              try {
+                  fs.unlinkSync(filePath);
+                  console.log(`[API Main Finally Cleanup] Deleted: ${filePath}`);
+              } catch (unlinkErr) {
+                  console.error(`[API Main Finally Cleanup] Error deleting file ${filePath}:`, unlinkErr);
               }
-          });
-          console.log("[API Main Finally] Cleanup finished (URL response or pre-stream error).");
-      } else {
-          console.log("[API Main Finally] Skipping general cleanup for binary stream (handled by stream events if stream started).");
-      }
+          }
+      });
+      console.log("[API Main Finally] Cleanup finished.");
   }
 }
