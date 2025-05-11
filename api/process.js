@@ -993,121 +993,88 @@ Respond clearly with only the exact song title (no additional commentary or expl
     console.log(`[API Upload Prep] Final path for operation: ${pathToUpload}, S3 Key: ${finalS3Key}, ContentType: ${finalContentType}`);
     // --- End Final Conversion ---
 
-    // --- Output Handling (S3 Upload or Direct Binary Response) --- 
-    if (responseFormat === 'binary') {
-        if (!fs.existsSync(pathToUpload)) {
-            console.error(`[API Binary Response] Error: File not found at ${pathToUpload} for binary streaming.`);
-            if (!res.headersSent) {
-                res.status(500).json({ success: false, error: 'Processed file not found for binary response.'});
-            }
-            if (!res.writableEnded) { res.end(); }
-            return; 
-        }
+    // --- Determine Final Output Path and S3 Key for Response ---
+    let finalS3KeyForResponse = '';
+    let finalLocalPathForResponse = ''; // This will be the path to the file that might be streamed
 
-        console.log(`[API Binary Response] Preparing to stream binary file: ${pathToUpload}`);
-        const binaryContentTypeToUse = finalFileExtension === 'mp3' ? 'audio/mpeg' : 'audio/wav'; // Use determined extension
-        const binaryFilename = `processed_audio_${Date.now()}.${finalFileExtension}`;
-
-        res.setHeader('Content-Type', binaryContentTypeToUse);
-        res.setHeader('Content-Disposition', `attachment; filename="${binaryFilename}"`);
-        
-        const stats = fs.statSync(pathToUpload);
-        res.setHeader('Content-Length', stats.size);
-
-        const readStream = fs.createReadStream(pathToUpload);
-        
-        // Define cleanup function here to be accessible by stream events
-        const cleanupTempFiles = () => {
-            console.log("[API Binary Stream] Starting post-stream cleanup...");
-            const filesToDelete = [
-                downloadedTempPath, intermediateOutputPath, finalOutputPath,
-                whisperInputPath, tempMusicPath, normalizedMusicPath,
-                fadedMusicPath, trimmedMusicPath, mixedOutputPath, mp3OutputPath, srtOutputPath
-            ].filter(p => p); // Filter out null/undefined paths
-
-            filesToDelete.forEach(filePath => {
-                if (fs.existsSync(filePath)) {
-                    try {
-                        fs.unlinkSync(filePath);
-                        console.log(`[API Binary Stream Cleanup] Deleted: ${filePath}`);
-                    } catch (unlinkErr) {
-                        console.error(`[API Binary Stream Cleanup] Error deleting file ${filePath}:`, unlinkErr);
-                    }
-                }
-            });
-            console.log("[API Binary Stream Cleanup] Post-stream cleanup finished.");
-        };
-
-        readStream.pipe(res);
-
-        readStream.on('error', (err) => {
-            console.error('[API Binary Response] Error streaming file:', err);
-            if (!res.headersSent) {
-                try { res.status(500).json({ success: false, error: 'Failed to stream file.' }); }
-                catch (e) { console.error("[API Binary Response] Error sending error status:", e); }
-            }
-            if (!res.writableEnded) { res.end(); }
-            cleanupTempFiles(); // Cleanup on stream error
-        });
-
-        readStream.on('end', () => {
-            console.log(`[API Binary Response] Binary file ${binaryFilename} streamed successfully.`);
-            cleanupTempFiles(); // Cleanup on successful stream completion
-        });
-
-    } else { // Default 'url' responseFormat: Upload to S3 and send JSON response
-        console.log(`[API Upload] Uploading final audio from: ${pathToUpload} to S3 Key: ${finalS3Key}`);
-        
-        if (!fs.existsSync(pathToUpload)) {
-            console.error(`[API S3 Upload] Error: File not found at ${pathToUpload} for S3 upload.`);
-             if (!res.headersSent) {
-                res.status(500).json({ success: false, error: 'Processed file not found for S3 upload.'});
-            }
-            if (!res.writableEnded) {
-                res.end();
-            }
-            return; 
-        }
-        
-        if (!S3_BUCKET_NAME || !s3Client) {
-            console.error("[API S3 Upload] S3 Bucket Name or S3 Client is not configured. Cannot upload.");
-            if (!res.headersSent) {
-                 res.status(500).json({ success: false, error: 'S3 is not configured for upload.'});
-            }
-            if (!res.writableEnded) {
-                res.end();
-            }
-            return;
-        }
-
-        const audioUploadCommand = new PutObjectCommand({
-            Bucket: S3_BUCKET_NAME,
-            Key: finalS3Key, 
-            Body: fs.createReadStream(pathToUpload),
-            ContentType: finalContentType 
-        });
-        await s3Client.send(audioUploadCommand);
-        const s3AudioUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalS3Key}`;
-        console.log(`[API S3 Upload] Final audio uploaded successfully: ${s3AudioUrl}`);
-        // --- End S3 Upload for audio ---
-
-        // --- Send JSON Response with URLs ---
-        res.statusCode = 200;
-        res.setHeader('Content-Type', 'application/json');
-        const responsePayload = {
-            success: true,
-            audioUrl: s3AudioUrl
-        };
-        // Only include srtUrl if transcription was enabled AND successful
-        if (transcribe && s3SrtUrl) { 
-            responsePayload.srtUrl = s3SrtUrl;
-        }
-        console.log("[API Response JSON] Payload being sent:", JSON.stringify(responsePayload, null, 2));
-        res.end(JSON.stringify(responsePayload));
-        console.log("[API] Request processed successfully. Response sent for URL format.");
-        // --- End Send JSON Response ---
+    if (params.exportFormat === 'mp3' && mp3OutputPath) {
+      finalS3KeyForResponse = s3KeyMp3; // s3KeyMp3 is defined earlier
+      finalLocalPathForResponse = mp3OutputPath;
+    } else {
+      // Default to WAV (or the output of the last relevant step if not mp3)
+      // This could be mixedOutputPath if music was added, or finalOutputPath if no music/mp3
+      if (mixedOutputPath) { // If music was mixed, this is the most "final" audio before potential mp3 conversion
+        finalS3KeyForResponse = s3KeyMixed; // Assuming s3KeyMixed is the key for this
+        finalLocalPathForResponse = mixedOutputPath;
+      } else if (finalOutputPath) { // Else, if silence removal happened, use its output
+        finalS3KeyForResponse = s3KeyProcessed; // Assuming s3KeyProcessed is for this
+        finalLocalPathForResponse = finalOutputPath;
+      } else { // Fallback to the input if no processing other than potential S3 download occurred (should not happen ideally)
+        finalS3KeyForResponse = s3Key; // The original s3Key
+        finalLocalPathForResponse = downloadedTempPath;
+      }
     }
-    // --- End Output Handling ---
+    console.log(`[Response Prep] Final S3 key for audio response: ${finalS3KeyForResponse}`);
+    console.log(`[Response Prep] Final local path for potential binary stream: ${finalLocalPathForResponse}`);
+
+    // --- Prepare Success Response ---
+    const successResponse = {
+      success: true,
+      audioUrl: `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalS3KeyForResponse}`
+    };
+
+    if (finalSrtS3KeyForResponse) { // srtUrl is added if transcription was done and SRT was uploaded
+      successResponse.srtUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalSrtS3KeyForResponse}`;
+      console.log(`[API Success] Transcription successful. SRT URL: ${successResponse.srtUrl}`);
+    }
+
+    // --- MODIFICATION START ---
+    // If transcription was requested, always return JSON with URLs, regardless of responseFormat.
+    if (params.transcribe) {
+      console.log("[API Success] Transcription requested. Sending JSON response with URLs.");
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(successResponse));
+    } else if (params.responseFormat === 'binary' && finalLocalPathForResponse && fs.existsSync(finalLocalPathForResponse)) {
+    // --- MODIFICATION END ---
+      // Only stream binary if transcription was NOT requested AND responseFormat is binary AND file exists
+      console.log(`[API Success] responseFormat is binary. Streaming file: ${finalLocalPathForResponse}`);
+      res.statusCode = 200;
+      // Set content type based on export format or original if not specified
+      const streamContentType = params.exportFormat === 'mp3' ? 'audio/mpeg' : (originalContentType || 'application/octet-stream');
+      res.setHeader('Content-Type', streamContentType);
+      // Optional: Add Content-Disposition if you want to suggest a filename
+      // const downloadFileName = path.basename(finalLocalPathForResponse);
+      // res.setHeader('Content-Disposition', `attachment; filename="${downloadFileName}"`);
+      
+      const readStream = fs.createReadStream(finalLocalPathForResponse);
+      readStream.pipe(res);
+
+      // Ensure the response is ended after the stream finishes or errors
+      readStream.on('end', () => {
+        console.log('[API Success] Binary stream ended.');
+        // res.end(); // res.end() is implicitly called by pipe on end.
+      });
+      readStream.on('error', (streamError) => {
+        console.error('[API Error] Error streaming binary file:', streamError);
+        // Don't try to set headers/status if already sent
+        if (!res.headersSent) {
+          res.statusCode = 500;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, error: 'Failed to stream processed file.' }));
+        } else {
+          // If headers already sent, we might just have to abruptly end or log.
+          // Node's HTTP response might handle this by closing the connection.
+          res.end();
+        }
+      });
+    } else {
+      // Default to JSON response with URLs if not binary or if binary streaming conditions not met
+      console.log("[API Success] Sending JSON response with URLs (default or binary conditions not met).");
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(successResponse));
+    }
 
   } catch (processError) {
     // --- Main Processing Error Handling --- 

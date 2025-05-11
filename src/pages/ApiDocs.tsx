@@ -480,7 +480,7 @@ async function processAudioWithSlicr(audioFile, processingParams) {
                  <tr>
                    <td className="border border-border p-2"><code className="font-mono">responseFormat</code></td>
                    <td className="border border-border p-2">String</td>
-                   <td className="border border-border p-2">Determines the response type. Options: <br/>- <code className="font-mono">"url"</code> (default): Returns JSON with S3 URLs for processed files. <br/>- <code className="font-mono">"binary"</code>: Returns the processed audio file directly as a binary stream. If <code className="font-mono">"binary"</code> is chosen, SRT files (if transcribed) are still uploaded to S3 but their URL is not included in this direct audio response.</td>
+                   <td className="border border-border p-2">Determines the response type. Options: <br/>- <code className="font-mono">"url"</code> (default): Returns JSON with S3 URLs for processed files. <br/>- <code className="font-mono">"binary"</code>: Returns the processed audio file directly as a binary stream. <strong>However, if <code className="font-mono">transcribe</code> is set to <code className="font-mono">true</code>, this option is effectively overridden; the API will return a JSON response containing URLs for both the processed audio and the SRT transcript file (if transcription is successful), similar to the <code className="font-mono">"url"</code> format. In this scenario, the audio is not streamed directly.</strong></td>
                    <td className="border border-border p-2"><code className="font-mono">"binary"</code> or <code className="font-mono">"url"</code></td>
                  </tr>
                  {/* --- End New Response Format Parameter --- */}
@@ -496,7 +496,7 @@ async function processAudioWithSlicr(audioFile, processingParams) {
           <CardContent className="space-y-4">
              <div>
                 <h4 className="font-semibold mb-2">cURL Example (with responseFormat: "binary"):</h4>
-                 <p className="text-sm mb-2 text-muted-foreground">This example demonstrates getting the audio file directly. Add <code className="font-mono"> &gt; processed_audio.mp3</code> to the end of the last curl command to save the binary output to a file.</p>
+                 <p className="text-sm mb-2 text-muted-foreground">This example sets <code className="font-mono">transcribe: true</code> and <code className="font-mono">responseFormat: "binary"</code>. With the updated API logic, when <code className="font-mono">transcribe</code> is <code className="font-mono">true</code>, the API returns a JSON response (with <code className="font-mono">audioUrl</code> and <code className="font-mono">srtUrl</code> if transcription succeeds), overriding the <code className="font-mono">"binary"</code> response format. Therefore, you would parse this JSON to get the file URLs. If <code className="font-mono">transcribe</code> were <code className="font-mono">false</code> and <code className="font-mono">responseFormat</code> remained <code className="font-mono">"binary"</code>, you would then add <code className="font-mono"> &gt; processed_audio.mp3</code> to the cURL command to save the direct binary output.</p>
                 <CodeBlock language="bash" code={curlExample.replace(
                   '"musicVolumeDb": -18\n    }\n  }\'' /* Target this closing part */,
                   '"musicVolumeDb": -18,\n      "responseFormat": "binary"\n    }\n  }\'' /* Replacement */
