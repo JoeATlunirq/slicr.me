@@ -993,61 +993,48 @@ Respond clearly with only the exact song title (no additional commentary or expl
     console.log(`[API Upload Prep] Final path for operation: ${pathToUpload}, S3 Key: ${finalS3Key}, ContentType: ${finalContentType}`);
     // --- End Final Conversion ---
 
-    // --- Determine Final Output Path and S3 Key for Response ---
-    let finalS3KeyForResponse = '';
-    let finalLocalPathForResponse = ''; // This will be the path to the file that might be streamed
+    // --- Prepare Paths and Keys for Response ---
+    // `pathToUpload` (e.g., /tmp/processed_..._final.mp3) is the final local audio file path.
+    // `finalS3Key` (e.g., processed_..._final.mp3) is the S3 key for this final audio file.
+    // `s3SrtUrl` (e.g., https://bucket.s3.region.amazonaws.com/processed_..._final.srt) is the S3 URL for the SRT file if generated.
+    // These are all determined earlier in the script.
 
-    if (params.exportFormat === 'mp3' && mp3OutputPath) {
-      finalS3KeyForResponse = s3KeyMp3; // s3KeyMp3 is defined earlier
-      finalLocalPathForResponse = mp3OutputPath;
-    } else {
-      // Default to WAV (or the output of the last relevant step if not mp3)
-      // This could be mixedOutputPath if music was added, or finalOutputPath if no music/mp3
-      if (mixedOutputPath) { // If music was mixed, this is the most "final" audio before potential mp3 conversion
-        finalS3KeyForResponse = s3KeyMixed; // Assuming s3KeyMixed is the key for this
-        finalLocalPathForResponse = mixedOutputPath;
-      } else if (finalOutputPath) { // Else, if silence removal happened, use its output
-        finalS3KeyForResponse = s3KeyProcessed; // Assuming s3KeyProcessed is for this
-        finalLocalPathForResponse = finalOutputPath;
-      } else { // Fallback to the input if no processing other than potential S3 download occurred (should not happen ideally)
-        finalS3KeyForResponse = s3Key; // The original s3Key
-        finalLocalPathForResponse = downloadedTempPath;
-      }
-    }
-    console.log(`[Response Prep] Final S3 key for audio response: ${finalS3KeyForResponse}`);
-    console.log(`[Response Prep] Final local path for potential binary stream: ${finalLocalPathForResponse}`);
+    const finalAudioS3KeyForResponse = finalS3Key; // Use the globally determined finalS3Key
+    const finalAudioLocalPathForStream = pathToUpload; // Use the globally determined pathToUpload
 
-    // --- Prepare Success Response ---
+    console.log(`[Response Prep] Final S3 key for audio response: ${finalAudioS3KeyForResponse}`);
+    console.log(`[Response Prep] Final local path for potential binary stream: ${finalAudioLocalPathForStream}`);
+
+    // --- Prepare Success Response Object ---
     const successResponse = {
       success: true,
-      audioUrl: `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalS3KeyForResponse}`
+      audioUrl: `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalAudioS3KeyForResponse}`
     };
 
-    if (finalSrtS3KeyForResponse) { // srtUrl is added if transcription was done and SRT was uploaded
-      successResponse.srtUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalSrtS3KeyForResponse}`;
-      console.log(`[API Success] Transcription successful. SRT URL: ${successResponse.srtUrl}`);
+    if (s3SrtUrl) { // If SRT was generated and uploaded, s3SrtUrl will be its full URL
+      successResponse.srtUrl = s3SrtUrl;
+      console.log(`[API Success] Transcription successful. Adding SRT URL to response: ${successResponse.srtUrl}`);
     }
+    // --- End Prepare Success Response Object ---
 
-    // --- MODIFICATION START ---
-    // If transcription was requested, always return JSON with URLs, regardless of responseFormat.
+    // --- Send Response Based on transcribe and responseFormat ---
     if (params.transcribe) {
       console.log("[API Success] Transcription requested. Sending JSON response with URLs.");
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify(successResponse));
-    } else if (params.responseFormat === 'binary' && finalLocalPathForResponse && fs.existsSync(finalLocalPathForResponse)) {
-    // --- MODIFICATION END ---
+    } else if (params.responseFormat === 'binary' && finalAudioLocalPathForStream && fs.existsSync(finalAudioLocalPathForStream)) {
       // Only stream binary if transcription was NOT requested AND responseFormat is binary AND file exists
-      console.log(`[API Success] responseFormat is binary. Streaming file: ${finalLocalPathForResponse}`);
+      console.log(`[API Success] responseFormat is binary. Streaming file: ${finalAudioLocalPathForStream}`);
       res.statusCode = 200;
-      // Set content type based on export format or original if not specified
-      const streamContentType = params.exportFormat === 'mp3' ? 'audio/mpeg' : (originalContentType || 'application/octet-stream');
+      // Set content type based on the finalContentType determined after all processing
+      const streamContentType = finalContentType || (params.exportFormat === 'mp3' ? 'audio/mpeg' : 'application/octet-stream');
       res.setHeader('Content-Type', streamContentType);
       // Optional: Add Content-Disposition if you want to suggest a filename
-      // const downloadFileName = path.basename(finalLocalPathForResponse);
+      // const downloadFileName = path.basename(finalAudioLocalPathForStream);
       // res.setHeader('Content-Disposition', `attachment; filename="${downloadFileName}"`);
       
-      const readStream = fs.createReadStream(finalLocalPathForResponse);
+      const readStream = fs.createReadStream(finalAudioLocalPathForStream);
       readStream.pipe(res);
 
       // Ensure the response is ended after the stream finishes or errors
