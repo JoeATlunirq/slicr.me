@@ -1029,23 +1029,38 @@ Respond clearly with only the exact song title (no additional commentary or expl
         res.statusCode = 200;
         const streamContentType = finalContentType || (params.exportFormat === 'mp3' ? 'audio/mpeg' : 'application/octet-stream');
         res.setHeader('Content-Type', streamContentType);
+        // Optional: Add Content-Disposition for browsers to suggest a filename
+        // const downloadFileName = path.basename(finalAudioLocalPathForStream);
+        // res.setHeader('Content-Disposition', `attachment; filename="${downloadFileName}"`);
         
         const readStream = fs.createReadStream(finalAudioLocalPathForStream);
-        readStream.pipe(res);
 
-        readStream.on('end', () => {
-          console.log('[API Success] Binary stream ended.');
+        readStream.on('close', () => { // 'close' is typically better for cleanup than 'end' for readable streams
+          console.log('[API Stream] Stream closed.');
+          try {
+            if (fs.existsSync(finalAudioLocalPathForStream)) {
+              fs.unlinkSync(finalAudioLocalPathForStream);
+              console.log(`[API Stream Cleanup] Successfully deleted streamed file: ${finalAudioLocalPathForStream}`);
+            }
+          } catch (unlinkErr) {
+            console.error(`[API Stream Cleanup] Error deleting streamed file ${finalAudioLocalPathForStream}:`, unlinkErr);
+          }
         });
+
         readStream.on('error', (streamError) => {
           console.error('[API Error] Error streaming binary file:', streamError);
-             if (!res.headersSent) {
+          if (!res.headersSent) {
             res.statusCode = 500;
             res.setHeader('Content-Type', 'application/json');
             res.end(JSON.stringify({ success: false, error: 'Failed to stream processed file.' }));
           } else {
-                res.end();
-            }
+            // If headers already sent, we might just have to abruptly end or log.
+            // The stream closing will trigger cleanup if it was opened.
+            res.end(); 
+          }
         });
+
+        readStream.pipe(res);
       } else {
         // Default to JSON response with only audioUrl (transcription false, responseFormat is 'url' or binary conditions not met)
         const successResponse = {
@@ -1069,12 +1084,21 @@ Respond clearly with only the exact song title (no additional commentary or expl
     }
 
   } finally {
-      console.log("[API Main Finally] Starting cleanup for all temporary files...");
-      const filesToDelete = [
+      console.log("[API Main Finally] Starting general cleanup for non-streamed temporary files...");
+      let filesToDelete = [
           downloadedTempPath, intermediateOutputPath, finalOutputPath,
           whisperInputPath, tempMusicPath, normalizedMusicPath,
           fadedMusicPath, trimmedMusicPath, mixedOutputPath, mp3OutputPath, srtOutputPath
-      ].filter(p => p); // Filter out null/undefined paths
+      ];
+
+      // If a binary response was successfully initiated for streaming, 
+      // its specific cleanup is handled by the stream 'close' event, so exclude it here.
+      if (params && params.responseFormat === 'binary' && params.transcribe === false && finalAudioLocalPathForStream) {
+          console.log(`[API Main Finally] Excluding ${finalAudioLocalPathForStream} from general cleanup as it's handled by stream events.`);
+          filesToDelete = filesToDelete.filter(p => p !== finalAudioLocalPathForStream);
+      }
+
+      filesToDelete = filesToDelete.filter(p => p); // Filter out null/undefined paths
 
       filesToDelete.forEach(filePath => {
           if (filePath && fs.existsSync(filePath)) {
