@@ -359,7 +359,7 @@ export default async function handler(req, res) {
     mp3OutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_final.mp3`);
     // Assign SRT paths as well (SRT key remains the same)
     srtOutputPath = path.join(os.tmpdir(), `${baseOutputFilename}_final.srt`);
-    s3SrtKey = `${baseOutputFilename}_final.srt`;
+    s3SrtKey = `${baseOutputFilename}_final.srt.srt`;
     // -----------------------------
 
     console.log(`[API] Input Path for Processing: ${inputPath}`);
@@ -601,11 +601,13 @@ export default async function handler(req, res) {
                             console.log(`[API Transcribe SRT] SRT file generated: ${srtOutputPath}`);
                             // Upload SRT to S3
                             console.log(`[API Transcribe SRT] Uploading SRT to S3 bucket: ${S3_BUCKET_NAME}, Key: ${s3SrtKey}`);
+                            const srtFileNameForDownload = path.basename(s3SrtKey);
                             const srtUploadCommand = new PutObjectCommand({
                                 Bucket: S3_BUCKET_NAME,
                                 Key: s3SrtKey,
                                 Body: fs.createReadStream(srtOutputPath),
-                                ContentType: 'text/plain' // Or application/x-subrip
+                                ContentType: 'application/x-subrip', // Correct MIME type for SRT
+                                ContentDisposition: `attachment; filename="${srtFileNameForDownload}"` // Force download
                             });
                             await s3Client.send(srtUploadCommand);
                             s3SrtUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${s3SrtKey}`;
