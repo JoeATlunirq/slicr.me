@@ -564,12 +564,12 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
           description: "Your processed audio is downloading.",
         });
         // Trigger download
-        const filename = s3Key.substring(s3Key.lastIndexOf('/') + 1).replace(/^s3_input_\d+_/, 'processed_') + '.' + processingParams.exportFormat;
-        forceDownload(data.audioUrl, filename);
+        // The backend now controls the filename via Content-Disposition.
+        // We just need to provide a generic fallback filename.
+        forceDownload(data.audioUrl, "processed_audio.mp3");
         if (data.srtUrl) {
             toast({ title: "SRT Generated", description: "SRT subtitles also downloading." });
-            const srtFilename = filename.replace(/\.[^/.]+$/, ".srt");
-            forceDownload(data.srtUrl, srtFilename);
+            forceDownload(data.srtUrl, "processed_audio.srt");
         }
       } else {
         throw new Error(data.error || "Processing completed but no audio URL was returned.");
@@ -822,49 +822,42 @@ const AppInterface = ({ onBack }: AppInterfaceProps) => {
 
   // --- Helper Function to force download ---
   const forceDownload = async (url: string, defaultFilename: string) => {
-      let downloadToastId: string | number | undefined = undefined; // Declare here
-      // Consider API key for download if files are not public?
-      // For now, assuming S3 URLs are publicly accessible or presigned for GET
-      try {
-          // Update status message for download
-          setExportStatusMessage(`Fetching ${defaultFilename}...`);
-          // Store the ID from the toast return value
-          const toastInstance = toast({ title: "Downloading...", description: `Fetching ${defaultFilename}...` });
-          downloadToastId = toastInstance?.id; // Assign here
-          const response = await fetch(url);
-          if (!response.ok) {
-              throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
-          }
-          const blob = await response.blob();
-          const objectUrl = URL.createObjectURL(blob);
-          
-          const link = document.createElement('a');
-          link.href = objectUrl;
-          const filename = url.substring(url.lastIndexOf('/') + 1) || defaultFilename;
-          link.download = filename;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          
-          // Revoke the object URL after a short delay
-          setTimeout(() => URL.revokeObjectURL(objectUrl), 1000); 
-          // Dismiss using the hook's dismiss function
-          if (typeof downloadToastId === 'string') {
-            dismissToast(downloadToastId);
-          }
-          toast({ title: "Download Started", description: `Downloading ${filename}...` });
-          return true;
-      } catch (error) {
-          console.error(`Error forcing download for ${url}:`, error);
-          // Clear status on error
-          setExportStatusMessage("Error occurred.");
-          // Dismiss using the hook's dismiss function
-          if (typeof downloadToastId === 'string') {
-             dismissToast(downloadToastId);
+    setExportStatusMessage(`Downloading...`);
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
       }
-          toast({ title: "Download Error", description: `Could not download ${defaultFilename}. ${error instanceof Error ? error.message : 'Network error'}`, variant: "destructive" });
-          return false;
+
+      const disposition = response.headers.get('content-disposition');
+      let filename = defaultFilename;
+      if (disposition && disposition.indexOf('attachment') !== -1) {
+        const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+        const matches = filenameRegex.exec(disposition);
+        if (matches != null && matches[1]) {
+          filename = matches[1].replace(/['"]/g, '').trim();
+        }
       }
+      
+      const blob = await response.blob();
+      const link = document.createElement('a');
+      link.href = window.URL.createObjectURL(blob);
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(link.href);
+      setExportStatusMessage("Download complete.");
+      console.log(`[Download] Successfully downloaded ${filename}`);
+    } catch (error: any) {
+      console.error(`Error forcing download for ${url}:`, error);
+      toast({
+        title: "Download Failed",
+        description: `Could not download the file. ${error.message}`,
+        variant: "destructive"
+      });
+      setExportStatusMessage("Download failed.");
+    }
   };
 
   return (

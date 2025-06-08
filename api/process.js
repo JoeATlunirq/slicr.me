@@ -1026,15 +1026,22 @@ Respond clearly with only the exact song title (no additional commentary or expl
     // --- End S3 Upload ---
 
     // --- Prepare Paths and Keys for Response ---
-    // `pathToUpload` (e.g., /tmp/processed_..._final.mp3) is the final local audio file path.
-    // `finalS3Key` (e.g., processed_..._final.mp3) is the S3 key for this final audio file.
-    // `s3SrtUrl` (e.g., https://bucket.s3.region.amazonaws.com/processed_..._final.srt) is the S3 URL for the SRT file if generated.
-    // These are all determined earlier in the script.
+    const finalAudioS3KeyForResponse = finalS3Key;
+    const finalAudioLocalPathForStream = pathToUpload;
 
-    const finalAudioS3KeyForResponse = finalS3Key; // Use the globally determined finalS3Key
-    const finalAudioLocalPathForStream = pathToUpload; // Use the globally determined pathToUpload
+    // --- Generate user-facing filenames ---
+    const s3KeyBasename = path.basename(s3Key); // e.g., 54620be3...-filename.mp3
+    // Strip the UUID from the start of the filename for the user
+    const userFilename = s3KeyBasename.includes('-') ? s3KeyBasename.substring(s3KeyBasename.indexOf('-') + 1) : s3KeyBasename;
+    const baseUserFilename = path.parse(userFilename).name;
+    const finalFileExtensionForUser = path.extname(pathToUpload)?.substring(1) || finalExportFormat;
 
-    console.log(`[Response Prep] Final s3 key for audio response: ${finalAudioS3KeyForResponse}`);
+    const userFacingAudioFilename = `processed_${baseUserFilename}.${finalFileExtensionForUser}`;
+    const userFacingSrtFilename = `processed_${baseUserFilename}.srt`;
+    // --- End user-facing filenames ---
+
+    console.log(`[Response Prep] Final S3 key for audio response: ${finalAudioS3KeyForResponse}`);
+    console.log(`[Response Prep] User-facing download name: ${userFacingAudioFilename}`);
     console.log(`[Response Prep] Final local path for potential binary stream: ${finalAudioLocalPathForStream}`);
 
     // --- Send Response ---
@@ -1044,7 +1051,7 @@ Respond clearly with only the exact song title (no additional commentary or expl
     const audioCommand = new GetObjectCommand({
         Bucket: S3_BUCKET_NAME,
         Key: finalAudioS3KeyForResponse,
-        ResponseContentDisposition: `attachment; filename="${path.basename(finalAudioS3KeyForResponse)}"`
+        ResponseContentDisposition: `attachment; filename="${userFacingAudioFilename}"`
     });
     const audioUrl = await getSignedUrl(s3Client, audioCommand, { expiresIn: 3600 }); // Expires in 1 hour
     console.log(`[API Response] Generated signed audio URL.`);
@@ -1057,7 +1064,7 @@ Respond clearly with only the exact song title (no additional commentary or expl
         const srtCommand = new GetObjectCommand({
             Bucket: S3_BUCKET_NAME,
             Key: srtKeyForSigning,
-            ResponseContentDisposition: `attachment; filename="${path.basename(srtKeyForSigning)}"`
+            ResponseContentDisposition: `attachment; filename="${userFacingSrtFilename}"`
         });
         signedSrtUrl = await getSignedUrl(s3Client, srtCommand, { expiresIn: 3600 });
         console.log(`[API Response] Generated signed SRT URL.`);
