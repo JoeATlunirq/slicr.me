@@ -1001,6 +1001,30 @@ Respond clearly with only the exact song title (no additional commentary or expl
     console.log(`[API Upload Prep] Final path for operation: ${pathToUpload}, S3 Key: ${finalS3Key}, ContentType: ${finalContentType}`);
     // --- End Final Conversion ---
 
+    // --- Upload Final Processed File to S3 ---
+    if (pathToUpload && fs.existsSync(pathToUpload)) {
+        console.log(`[API S3 Upload] Uploading final processed file ${pathToUpload} to s3://${S3_BUCKET_NAME}/${finalS3Key}`);
+        try {
+            const uploadCommand = new PutObjectCommand({
+                Bucket: S3_BUCKET_NAME,
+                Key: finalS3Key,
+                Body: fs.createReadStream(pathToUpload),
+                ContentType: finalContentType,
+                ACL: 'public-read' // Make the object publicly accessible
+            });
+            await s3Client.send(uploadCommand);
+            console.log(`[API S3 Upload] Successfully uploaded final file to S3.`);
+        } catch (s3UploadError) {
+            console.error(`[API S3 Upload] Error uploading final processed file to S3:`, s3UploadError);
+            // Decide if this should be a fatal error
+            throw new Error('Failed to upload processed file to S3.');
+        }
+    } else {
+        console.error(`[API S3 Upload] Final file to upload not found at path: ${pathToUpload}. Cannot upload.`);
+        throw new Error('Processed file not found for S3 upload.');
+    }
+    // --- End S3 Upload ---
+
     // --- Prepare Paths and Keys for Response ---
     // `pathToUpload` (e.g., /tmp/processed_..._final.mp3) is the final local audio file path.
     // `finalS3Key` (e.g., processed_..._final.mp3) is the S3 key for this final audio file.
