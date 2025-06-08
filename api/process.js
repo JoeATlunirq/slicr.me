@@ -20,6 +20,12 @@ const ALLOWED_UI_ORIGINS = [
   'https://www.slicr.me'   // Your production domain
   // Add other potential origins if needed (e.g., staging)
 ];
+
+// Dynamically add Vercel deployment URLs to allowed origins
+if (process.env.VERCEL_URL) {
+  ALLOWED_UI_ORIGINS.push(`https://${process.env.VERCEL_URL}`);
+  console.log(`[API Auth] Added Vercel deployment URL to allowed origins: https://${process.env.VERCEL_URL}`);
+}
 // ---------------------
 
 // --- AWS S3 Configuration --- 

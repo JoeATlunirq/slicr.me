@@ -25,6 +25,12 @@ const ALLOWED_UI_ORIGINS = [
   // Add other potential origins if needed (e.g., staging)
 ];
 
+// Dynamically add Vercel deployment URLs to allowed origins
+if (process.env.VERCEL_URL) {
+  ALLOWED_UI_ORIGINS.push(`https://${process.env.VERCEL_URL}`);
+  console.log(`[API Generate URL] Added Vercel deployment URL to allowed origins: https://${process.env.VERCEL_URL}`);
+}
+
 // Optional: Vercel specific config (though not strictly necessary for this simple endpoint)
 export const config = {
   api: {
