@@ -10,6 +10,7 @@ import process from 'process';
 import axios from 'axios';
 import ffprobeStatic from 'ffprobe-static';
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import OpenAI from 'openai';
 
 // --- API Key Check --- 
@@ -616,8 +617,8 @@ export default async function handler(req, res) {
                                 ContentDisposition: `attachment; filename="${srtFileNameForDownload}"` // Force download
                             });
                             await s3Client.send(srtUploadCommand);
-                            s3SrtUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${s3SrtKey}`;
-                            console.log(`[API Transcribe SRT] SRT uploaded successfully: ${s3SrtUrl}`);
+                            s3SrtUrl = s3SrtKey; // Store the key for signing later
+                            console.log(`[API Transcribe SRT] SRT uploaded successfully. Key: ${s3SrtKey}`);
                         } else {
                             console.warn("[API Transcribe SRT] Generated SRT content was empty. No SRT file saved or uploaded.");
                         }
@@ -1009,8 +1010,7 @@ Respond clearly with only the exact song title (no additional commentary or expl
                 Bucket: S3_BUCKET_NAME,
                 Key: finalS3Key,
                 Body: fs.createReadStream(pathToUpload),
-                ContentType: finalContentType,
-                ACL: 'public-read' // Make the object publicly accessible
+                ContentType: finalContentType
             });
             await s3Client.send(uploadCommand);
             console.log(`[API S3 Upload] Successfully uploaded final file to S3.`);
@@ -1034,19 +1034,44 @@ Respond clearly with only the exact song title (no additional commentary or expl
     const finalAudioS3KeyForResponse = finalS3Key; // Use the globally determined finalS3Key
     const finalAudioLocalPathForStream = pathToUpload; // Use the globally determined pathToUpload
 
-    console.log(`[Response Prep] Final S3 key for audio response: ${finalAudioS3KeyForResponse}`);
+    console.log(`[Response Prep] Final s3 key for audio response: ${finalAudioS3KeyForResponse}`);
     console.log(`[Response Prep] Final local path for potential binary stream: ${finalAudioLocalPathForStream}`);
 
     // --- Send Response ---
+    console.log(`[API Response] Generating signed URLs for response...`);
+
+    // Generate signed URL for the main audio file
+    const audioCommand = new GetObjectCommand({
+        Bucket: S3_BUCKET_NAME,
+        Key: finalAudioS3KeyForResponse,
+        ResponseContentDisposition: `attachment; filename="${path.basename(finalAudioS3KeyForResponse)}"`
+    });
+    const audioUrl = await getSignedUrl(s3Client, audioCommand, { expiresIn: 3600 }); // Expires in 1 hour
+    console.log(`[API Response] Generated signed audio URL.`);
+
+    // Generate signed URL for the SRT file if it exists
+    let signedSrtUrl = null;
+    if (s3SrtUrl) { // This variable now holds the KEY
+        const srtKeyForSigning = s3SrtUrl; 
+        console.log(`[API Response] Generating signed SRT URL for key: ${srtKeyForSigning}`);
+        const srtCommand = new GetObjectCommand({
+            Bucket: S3_BUCKET_NAME,
+            Key: srtKeyForSigning,
+            ResponseContentDisposition: `attachment; filename="${path.basename(srtKeyForSigning)}"`
+        });
+        signedSrtUrl = await getSignedUrl(s3Client, srtCommand, { expiresIn: 3600 });
+        console.log(`[API Response] Generated signed SRT URL.`);
+    }
+    
     if (params.transcribe) {
       // If transcription is requested, always return JSON with audioUrl and srtUrl (if available)
       const successResponse = {
         success: true,
-        audioUrl: `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalAudioS3KeyForResponse}`
+        audioUrl: audioUrl
       };
-      if (s3SrtUrl) { // s3SrtUrl is the full URL to the SRT file, populated if transcription was successful
-        successResponse.srtUrl = s3SrtUrl;
-        console.log(`[API Success] Transcription true. JSON response. Adding SRT URL: ${s3SrtUrl}`);
+      if (signedSrtUrl) { // s3SrtUrl is the full URL to the SRT file, populated if transcription was successful
+        successResponse.srtUrl = signedSrtUrl;
+        console.log(`[API Success] Transcription true. JSON response. Adding SRT URL: ${signedSrtUrl}`);
       } else {
         console.log(`[API Success] Transcription true, but no SRT URL was generated (transcription might have failed or produced no SRT).`);
       }
@@ -1097,7 +1122,7 @@ Respond clearly with only the exact song title (no additional commentary or expl
         // Default to JSON response with only audioUrl (transcription false, responseFormat is 'url' or binary conditions not met)
         const successResponse = {
             success: true,
-          audioUrl: `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${finalAudioS3KeyForResponse}`
+            audioUrl: audioUrl
         };
         console.log("[API Success] Transcription false. Sending JSON response with audioUrl.");
         res.statusCode = 200;
